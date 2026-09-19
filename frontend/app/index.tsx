@@ -1,15 +1,21 @@
 import React, { useRef, useState } from 'react';
-import { StyleSheet, Text, View, Animated, Alert, Platform, Pressable } from 'react-native';
+import { StyleSheet, Text, View, Animated, Alert, Platform, Pressable, LayoutChangeEvent } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { startIdentifyJob } from '../lib/api';
+import { startIdentifyJob, getIdentifyJob } from '../lib/api';
 import { setJobPreview } from '../lib/resultStore';
 import { CaptureButton } from '../components/CaptureButton';
 import { ScanningCircle } from '../components/ScanningCircle';
+import { SilhouetteFlash } from '../components/SilhouetteFlash';
+import { RippleTransition } from '../components/RippleTransition';
+import { BACKGROUND } from '../lib/theme';
 
-type Phase = 'idle' | 'scanning';
+type Phase = 'idle' | 'scanning' | 'revealing';
+
+const POLL_MS = 400;
+const POLL_DEADLINE_MS = 90_000;
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -18,31 +24,70 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [phase, setPhase] = useState<Phase>('idle');
   const [uri, setUri] = useState<string | null>(null);
+  const [circleOrigin, setCircleOrigin] = useState({ x: 0, y: 0 });
+  const [jobDone, setJobDone] = useState(false);
+  const jobIdRef = useRef<string | null>(null);
+  const ringFinishedRef = useRef<(() => void) | null>(null);
 
   const idleOpacity = useRef(new Animated.Value(1)).current;
   const scanOpacity = useRef(new Animated.Value(0)).current;
 
-  const setPhaseAnimated = (next: Phase) => {
-    setPhase(next);
+  const setIdleVisible = (visible: boolean) => {
     Animated.parallel([
-      Animated.timing(idleOpacity, { toValue: next === 'idle' ? 1 : 0, duration: 320, useNativeDriver }),
-      Animated.timing(scanOpacity, { toValue: next === 'scanning' ? 1 : 0, duration: 320, useNativeDriver }),
+      Animated.timing(idleOpacity, { toValue: visible ? 1 : 0, duration: 320, useNativeDriver }),
+      Animated.timing(scanOpacity, { toValue: visible ? 0 : 1, duration: 320, useNativeDriver }),
     ]).start();
+  };
+
+  const onCircleLayout = (event: LayoutChangeEvent) => {
+    const { x, y, width, height } = event.nativeEvent.layout;
+    setCircleOrigin({ x: x + width / 2, y: y + height / 2 });
   };
 
   const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
     setUri(asset.uri);
-    setPhaseAnimated('scanning');
+    setJobDone(false);
+    setPhase('scanning');
+    setIdleVisible(false);
     try {
       const job = await startIdentifyJob(asset);
       setJobPreview(job.job_id, asset.uri);
-      router.push(`/job/${job.job_id}`);
-      setTimeout(() => setPhaseAnimated('idle'), 400);
+      jobIdRef.current = job.job_id;
+
+      // Keep the circle up until the job is actually finished — starting the
+      // job only means it was accepted, not that a result exists yet.
+      const started = Date.now();
+      let latest = job;
+      while (latest.status !== 'done' && latest.status !== 'error') {
+        if (Date.now() - started > POLL_DEADLINE_MS) {
+          throw new Error('This photo took too long to identify. Try another screenshot.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        latest = await getIdentifyJob(job.job_id);
+      }
+
+      // Let the ring's fast finish animation land before rippling away.
+      await new Promise<void>((resolve) => {
+        ringFinishedRef.current = resolve;
+        setJobDone(true);
+      });
+      setPhase('revealing');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Could not process that screenshot.';
       Alert.alert('Identify Failed', message);
-      setPhaseAnimated('idle');
+      setPhase('idle');
+      setIdleVisible(true);
     }
+  };
+
+  const onRippleDone = () => {
+    if (jobIdRef.current) {
+      router.push(`/job/${jobIdRef.current}`);
+    }
+    setTimeout(() => {
+      setPhase('idle');
+      setIdleVisible(true);
+    }, 400);
   };
 
   const pickFromLibrary = async () => {
@@ -90,12 +135,27 @@ export default function HomeScreen() {
       </Animated.View>
 
       <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity, pointerEvents: 'none' }]}>
-        {uri && phase === 'scanning' && (
-          <ScanningCircle uri={uri} size={176} durationMs={12000} />
+        {uri && phase !== 'idle' && (
+          <View onLayout={onCircleLayout} style={styles.circleStack}>
+            <SilhouetteFlash active={phase === 'scanning'} size={260} />
+            <ScanningCircle
+              uri={uri}
+              size={176}
+              done={jobDone}
+              onFinished={() => ringFinishedRef.current?.()}
+            />
+          </View>
         )}
         <Text style={styles.scanTitle}>Identifying your fit</Text>
         <Text style={styles.scanSubtitle}>Matching the pieces to real listings</Text>
       </Animated.View>
+
+      <RippleTransition
+        originX={circleOrigin.x}
+        originY={circleOrigin.y}
+        active={phase === 'revealing'}
+        onDone={onRippleDone}
+      />
     </View>
   );
 }
@@ -103,7 +163,7 @@ export default function HomeScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#050509',
+    backgroundColor: BACKGROUND,
   },
   layer: {
     ...StyleSheet.absoluteFill,
@@ -113,6 +173,12 @@ const styles = StyleSheet.create({
   },
   scanningLayer: {
     gap: 24,
+  },
+  circleStack: {
+    width: 176,
+    height: 176,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     position: 'absolute',

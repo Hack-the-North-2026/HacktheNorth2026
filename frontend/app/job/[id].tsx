@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { StyleSheet, Text, View, ScrollView, Image, Pressable, Animated } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, Image, Pressable, Animated, Easing } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -10,10 +10,31 @@ import { getIdentifyJob } from '../../lib/api';
 import { getJobPreview } from '../../lib/resultStore';
 import { withIdentifySpan } from '../../lib/sentry';
 import { IdentifyResult } from '../../lib/types';
+import { ACCENT_GRADIENT } from '../../lib/theme';
 
 const HERO_HEIGHT = 460;
 const POLL_MS = 400;
 const POLL_DEADLINE_MS = 90_000;
+
+function RevealOverlay() {
+  const opacity = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.timing(opacity, {
+      toValue: 0,
+      duration: 480,
+      delay: 40,
+      easing: Easing.out(Easing.cubic),
+      useNativeDriver: true,
+    }).start();
+  }, [opacity]);
+
+  return (
+    <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, styles.reveal, { opacity }]}>
+      <LinearGradient colors={ACCENT_GRADIENT} style={StyleSheet.absoluteFill} />
+    </Animated.View>
+  );
+}
 
 function AnimatedSection({ index, children }: { index: number; children: React.ReactNode }) {
   const opacity = useRef(new Animated.Value(0)).current;
@@ -171,6 +192,8 @@ export default function JobScreen() {
       <Pressable style={styles.backButton} onPress={() => router.replace('/')}>
         <Ionicons name="chevron-back" size={22} color="#F5F5FA" />
       </Pressable>
+
+      <RevealOverlay />
     </View>
   );
 }
@@ -268,6 +291,9 @@ const styles = StyleSheet.create({
     color: '#6B6B7A',
     fontSize: 14,
     textAlign: 'center',
+  },
+  reveal: {
+    zIndex: 10,
   },
   backButton: {
     position: 'absolute',
