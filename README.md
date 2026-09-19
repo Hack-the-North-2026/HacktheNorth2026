@@ -8,7 +8,7 @@ Fit Stealer is a full-stack AI app designed to extract fashion outfits directly 
 
 ```
 FitStealer/
-├── frontend/                      # Expo (React Native / web) — port 3000
+├── frontend/                      # Expo (React Native) — port 3000, opens iOS Simulator
 │   ├── app/                       # Expo Router file-based routes
 │   ├── components/                # Reusable UI components
 │   ├── lib/                       # API clients (calls backend on port 4000)
@@ -90,9 +90,10 @@ npm run dev
 
 This starts:
 
-- Frontend: `http://localhost:3000`
+- Frontend Metro bundler at `http://localhost:3000`
 - Backend: `http://localhost:4000`
 - AI service: `http://localhost:8000`
+- The **iOS Simulator** (iPhone 17) with the app in Expo Go
 
 Health checks:
 
@@ -101,24 +102,36 @@ Health checks:
 
 ---
 
-### Starting Services Individually
+### iOS Simulator
 
-**Frontend (Expo web on port 3000):**
+Install Xcode so the iOS Simulator is available.
+
+From the project root, `npm run dev` boots **iPhone 17**, installs Expo Go on first launch if needed, and opens the app:
 
 ```bash
-cd frontend
 npm run dev
 ```
 
-For native clients instead of web:
+To start only the frontend on the simulator:
 
 ```bash
 cd frontend
-npm run ios      # iOS Simulator
+npm run ios
+```
+
+`npm run ios` and `npm run dev` in `frontend/` both boot the simulator, wait until Metro is up on port 3000, then open `exp://127.0.0.1:3000` in Expo Go.
+
+If the Simulator window is already open, bring it to the front. If the app does not appear, open Expo Go on the simulator and load `exp://127.0.0.1:3000`.
+
+For other clients instead of the simulator:
+
+```bash
+cd frontend
+npm run web      # web browser
 npm run android  # Android Emulator
 ```
 
-Press `a` for Android, `i` for iOS, or scan the QR code with Expo Go when using `npm start`.
+### Starting Services Individually
 
 **Backend (Express on port 4000):**
 

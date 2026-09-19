@@ -20,10 +20,10 @@
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "dev": "expo start --web --port 3000",
+    "dev": "node scripts/dev-ios.mjs",
     "start": "expo start --port 3000",
     "android": "expo start --android --port 3000",
-    "ios": "expo start --ios --port 3000",
+    "ios": "node scripts/dev-ios.mjs",
     "web": "expo start --web --port 3000"
   },
   "private": true
