@@ -1,3 +1,5 @@
+import { findRecentJob } from './recentSearches.js';
+
 const jobs = new Map();
 const JOB_TTL_MS = Number(process.env.JOB_TTL_MS || 24 * 60 * 60 * 1000);
 
@@ -8,8 +10,20 @@ export function createJob(result) {
   return result;
 }
 
-export function getJob(jobId) {
-  return jobs.get(jobId) ?? null;
+export async function getJob(jobId) {
+  const live = jobs.get(jobId);
+  if (live) return live;
+
+  try {
+    const persisted = await findRecentJob(jobId);
+    if (persisted) {
+      jobs.set(jobId, persisted);
+      return persisted;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 export function updateJob(jobId, patch) {

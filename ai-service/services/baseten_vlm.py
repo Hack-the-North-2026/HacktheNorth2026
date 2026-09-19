@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import uuid
 from pathlib import Path
@@ -24,6 +25,8 @@ from openai import OpenAI
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 load_dotenv()
+
+logger = logging.getLogger("fit_stealer.see")
 
 MIN_CONFIDENCE = 0.5
 
@@ -147,6 +150,13 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
     if not image_paths:
         raise ValueError("image_paths must not be empty")
 
+    logger.info(
+        "see — calling Baseten (%s) with %s image%s",
+        model,
+        len(image_paths),
+        "" if len(image_paths) == 1 else "s",
+    )
+
     client = OpenAI(
         api_key=api_key,
         base_url="https://inference.baseten.co/v1",
@@ -187,6 +197,7 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
     result: dict = json.loads(raw)
 
     kept = []
+    dropped = 0
     for garment in result.get("garments", []):
         if not garment.get("id"):
             garment["id"] = str(uuid.uuid4())
@@ -196,10 +207,24 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
             confidence = 0.0
         garment["confidence"] = confidence
         if confidence < MIN_CONFIDENCE:
+            dropped += 1
             continue
         kept.append(garment)
     result["garments"] = kept
     result["outfit_summary"] = result.get("outfit_summary") or ""
+
+    names = ", ".join(
+        str(g.get("category") or "item") for g in kept
+    ) or "none"
+    if dropped:
+        logger.info(
+            "see — Baseten found %s clothes (%s), dropped %s low-confidence",
+            len(kept),
+            names,
+            dropped,
+        )
+    else:
+        logger.info("see — Baseten found %s clothes: %s", len(kept), names)
 
     return result
 

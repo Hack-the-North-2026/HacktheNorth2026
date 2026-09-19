@@ -14,6 +14,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "fit-stealer": "file:..",
+    "mongodb": "^7.6.0",
     "multer": "^2.4.0",
     "sharp": "^0.35.4"
   }

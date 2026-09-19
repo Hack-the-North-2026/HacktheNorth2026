@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { logger } from './logger.js';
+import { jobMsg, logger } from './logger.js';
 
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 45_000);
@@ -33,11 +33,16 @@ async function parseJson(response) {
   return response.json().catch(() => ({}));
 }
 
-export async function seeAndCrop(file) {
+function jobHeaders(jobId, extra = {}) {
+  return jobId ? { ...extra, 'x-job-id': jobId } : extra;
+}
+
+export async function seeAndCrop(file, jobId) {
   const url = `${AI_SERVICE_URL()}/api/identify`;
   const response = await fetch(url, {
     method: 'POST',
     body: imageFormData(file),
+    headers: jobHeaders(jobId),
     signal: AbortSignal.timeout(SEE_TIMEOUT_MS),
   });
   const data = await parseJson(response);
@@ -53,11 +58,12 @@ export async function seeAndCrop(file) {
   };
 }
 
-export async function seeOnly(file) {
+export async function seeOnly(file, jobId) {
   const url = `${AI_SERVICE_URL()}/tools/see`;
   const response = await fetch(url, {
     method: 'POST',
     body: imageFormData(file),
+    headers: jobHeaders(jobId),
     signal: AbortSignal.timeout(SEE_TIMEOUT_MS),
   });
   const data = await parseJson(response);
@@ -73,11 +79,11 @@ export async function seeOnly(file) {
   };
 }
 
-export async function cropGarments(imagePath, garments) {
+export async function cropGarments(imagePath, garments, jobId) {
   const url = `${AI_SERVICE_URL()}/tools/crop`;
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jobHeaders(jobId, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({ image_path: imagePath, garments }),
     signal: AbortSignal.timeout(SEE_TIMEOUT_MS),
   });
@@ -90,18 +96,21 @@ export async function cropGarments(imagePath, garments) {
   return Array.isArray(data.garments) ? data.garments : garments;
 }
 
-export async function perceive(file) {
+export async function perceive(file, jobId) {
+  logger.info(jobMsg(jobId, 'see — sending photo to AI (Baseten VLM + crop)'));
   try {
-    return await seeAndCrop(file);
+    return await seeAndCrop(file, jobId);
   } catch (error) {
     if (error.name === 'TimeoutError' || error.name === 'AbortError') throw error;
     if (error.status && error.status !== 404) throw error;
-    const seen = await seeOnly(file);
+    logger.warn(jobMsg(jobId, 'see — combined identify failed, trying see then crop separately'));
+    const seen = await seeOnly(file, jobId);
     if (seen.image_path) {
       try {
-        seen.garments = await cropGarments(seen.image_path, seen.garments);
+        seen.garments = await cropGarments(seen.image_path, seen.garments, jobId);
       } catch (cropError) {
-        logger.warn('crop.failed', { error: cropError });
+        logger.warn(jobMsg(jobId, 'crop — failed, continuing without garment chips'));
+        logger.warn(cropError instanceof Error ? cropError.message : String(cropError));
       }
     }
     return seen;
@@ -122,10 +131,10 @@ function chipPayload(garment) {
   }
 }
 
-async function postJson(pathname, body, timeoutMs) {
+async function postJson(pathname, body, timeoutMs, jobId) {
   const response = await fetch(`${AI_SERVICE_URL()}${pathname}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jobHeaders(jobId, { 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -157,21 +166,22 @@ export async function resolveSourceMode(forceMock) {
   }
 
   cachedSourceMode = 'mock';
-  logger.warn('source.mock_fallback', {
-    message: 'Source/Rank HTTP tools are unavailable; using fixture matches.',
-  });
+  logger.warn('source — AI source/rank tools are down; will use mock matches');
   return cachedSourceMode;
 }
 
-export async function sourceAndRank(garment) {
+export async function sourceAndRank(garment, jobId) {
   const mode = await resolveSourceMode(false);
   const chip = chipPayload(garment);
+  const label = garment?.category || garment?.id || 'item';
 
   if (mode === 'source-rank') {
+    logger.info(jobMsg(jobId, `source — ${label}: calling Shopify + OpenAI rank`));
     const { response, data } = await postJson(
       '/tools/source-rank',
       { garment, chip },
       SOURCE_TIMEOUT_MS,
+      jobId,
     );
     if (!response.ok) {
       const err = new Error(fastapiDetail(data) || `Source failed (${response.status}).`);
@@ -182,7 +192,8 @@ export async function sourceAndRank(garment) {
   }
 
   if (mode === 'source') {
-    const sourced = await postJson('/tools/source', { garment, chip }, SOURCE_TIMEOUT_MS);
+    logger.info(jobMsg(jobId, `source — ${label}: calling Shopify, then OpenAI rank`));
+    const sourced = await postJson('/tools/source', { garment, chip }, SOURCE_TIMEOUT_MS, jobId);
     if (!sourced.response.ok) {
       const err = new Error(fastapiDetail(sourced.data) || `Source failed (${sourced.response.status}).`);
       err.status = sourced.response.status;
@@ -198,6 +209,7 @@ export async function sourceAndRank(garment) {
       '/tools/rank',
       { garment, candidates },
       SOURCE_TIMEOUT_MS,
+      jobId,
     );
     if (ranked.response.status === 404) {
       return candidates;

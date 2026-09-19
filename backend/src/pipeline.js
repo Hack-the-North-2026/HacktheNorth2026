@@ -11,8 +11,9 @@ import {
 } from './cleanup.js';
 import { downscaleUpload } from './downscale.js';
 import { createJob, updateJob } from './jobs.js';
+import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
 import { Sentry } from './sentry.js';
-import { logger } from './logger.js';
+import { jobMsg, logger } from './logger.js';
 import { perceive, resolveSourceMode, sourceAndRank } from './tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -110,10 +111,14 @@ function mockSeeResult() {
 
 function commit(jobId, ctx, patch) {
   if (ctx.cancelled) return null;
-  return updateJob(jobId, patch);
+  const next = updateJob(jobId, patch);
+  if (next?.status === 'done') {
+    void persistRecentSearch(next, ctx.deviceId);
+  }
+  return next;
 }
 
-export function startIdentifyJob({ origin = 'app', file } = {}) {
+export function startIdentifyJob({ origin = 'app', file, deviceId } = {}) {
   const jobOrigin = ALLOWED_ORIGINS.has(origin) ? origin : 'app';
   const job = createJob({
     job_id: randomUUID(),
@@ -122,9 +127,10 @@ export function startIdentifyJob({ origin = 'app', file } = {}) {
     items: [],
   });
 
-  const ctx = { cancelled: false };
+  const ctx = { cancelled: false, deviceId: sanitizeDeviceId(deviceId) };
   const limit = setTimeout(() => {
     ctx.cancelled = true;
+    logger.error(jobMsg(job.job_id, 'timed out — photo took too long to identify'));
     updateJob(job.job_id, {
       status: 'error',
       error: 'This photo took too long to identify. Try another screenshot.',
@@ -134,7 +140,7 @@ export function startIdentifyJob({ origin = 'app', file } = {}) {
 
   void runPipeline(job.job_id, file, ctx, jobOrigin)
     .catch((error) => {
-      logger.error('pipeline.failed', error, { job_id: job.job_id, origin: jobOrigin });
+      logger.error(jobMsg(job.job_id, 'pipeline failed'), error);
       commit(job.job_id, ctx, {
         status: 'error',
         error: isTimeoutError(error)
@@ -158,15 +164,22 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
     { name: 'identify', op: 'identify', attributes: { job_id: jobId, origin } },
     async () => {
   try {
+    logger.info(jobMsg(jobId, `started — identifying photo (from ${origin})`));
     commit(jobId, ctx, { status: 'ingesting' });
-    await downscaleUpload(file);
+    logger.info(jobMsg(jobId, 'ingest — preparing photo'));
+    await downscaleUpload(file, jobId);
     commit(jobId, ctx, { status: 'seeing' });
 
     let perceived;
     try {
-      perceived = mocks.has('see') ? mockSeeResult() : await perceive(file);
+      if (mocks.has('see')) {
+        logger.warn(jobMsg(jobId, 'see — using mock clothes (IDENTIFY_MOCK=see)'));
+        perceived = mockSeeResult();
+      } else {
+        perceived = await perceive(file, jobId);
+      }
     } catch (error) {
-      logger.error('pipeline.see_failed', error, { job_id: jobId, origin });
+      logger.error(jobMsg(jobId, 'see — Baseten/AI failed'), error);
       commit(jobId, ctx, {
         status: 'error',
         error: isTimeoutError(error)
@@ -183,7 +196,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       .filter((garment) => garment && garment.confidence >= 0.5);
 
     if (garments.length === 0) {
-      logger.info('identify.completed', { job_id: jobId, origin, status: 'done', garment_count: 0 });
+      logger.info(jobMsg(jobId, 'done — no clothes found in this photo'));
       commit(jobId, ctx, {
         status: 'done',
         outfit_summary: perceived?.outfit_summary || '',
@@ -192,6 +205,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       return;
     }
 
+    const names = garments.map((garment) => garment.category).join(', ');
+    logger.info(jobMsg(jobId, `see — ${garments.length} clothes: ${names}`));
     temps.push(...collectTempPaths({ garments }));
 
     commit(jobId, ctx, {
@@ -202,6 +217,11 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
 
     const forceMockSource = mocks.has('source');
     const sourceMode = await resolveSourceMode(forceMockSource);
+    if (sourceMode === 'mock') {
+      logger.warn(jobMsg(jobId, 'source — Shopify tools unavailable, using mock matches'));
+    } else {
+      logger.info(jobMsg(jobId, 'source — Shopify yes · Browserbase skipped · Composio skipped'));
+    }
 
     let ranked;
     try {
@@ -210,15 +230,16 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
           if (sourceMode === 'mock') {
             return { garment, matches: mockMatchesFor(garment) };
           }
-          const matches = await sourceAndRank(garment);
+          const matches = await sourceAndRank(garment, jobId);
           if (matches == null) {
+            logger.warn(jobMsg(jobId, `source — ${garment.category}: no live results, using mock matches`));
             return { garment, matches: mockMatchesFor(garment) };
           }
           return { garment, matches: normalizeMatches(matches) };
         }),
       );
     } catch (error) {
-      logger.error('pipeline.source_failed', error, { job_id: jobId, origin });
+      logger.error(jobMsg(jobId, 'source — shop search failed'), error);
       commit(jobId, ctx, {
         status: 'error',
         error: isTimeoutError(error)
@@ -229,13 +250,9 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
     }
 
     commit(jobId, ctx, { status: 'ranking' });
-    logger.info('identify.completed', {
-      job_id: jobId,
-      origin,
-      status: 'done',
-      garment_count: ranked.length,
-      match_count: ranked.reduce((count, item) => count + item.matches.length, 0),
-    });
+    const matchCount = ranked.reduce((count, item) => count + item.matches.length, 0);
+    logger.info(jobMsg(jobId, `rank — finished for all garments`));
+    logger.info(jobMsg(jobId, `done — ${ranked.length} clothes, ${matchCount} shop matches`));
     commit(jobId, ctx, {
       status: 'done',
       items: scrubChipKeys(ranked),

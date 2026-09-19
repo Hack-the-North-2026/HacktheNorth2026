@@ -67,3 +67,13 @@ export type IdentifyResult = {
   }>;
   error?: string;
 };
+
+export type RecentSearch = {
+  job_id: string;
+  created_at: string;
+  outfit_summary?: string;
+  item_count: number;
+  categories: string[];
+  thumbnail_url?: string;
+  preview_title?: string;
+};
