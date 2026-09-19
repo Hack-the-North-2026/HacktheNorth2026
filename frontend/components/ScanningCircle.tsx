@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Animated, Easing, Image, Platform, StyleSheet, View } from 'react-native';
+import { Animated, Easing, Image, Platform, StyleSheet, View, Text } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
-import { ACCENT, EASE_OUT_EXPO } from '../lib/theme';
+import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
+import { ACCENT, ACCENT_GRADIENT, EASE_OUT_EXPO } from '../lib/theme';
+import { isVideoUri } from '../lib/api';
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -30,6 +33,7 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
 }) => {
   const breathe = useRef(new Animated.Value(0)).current;
   const progress = useRef(new Animated.Value(0)).current;
+  const isVideo = isVideoUri(uri);
 
   const strokeWidth = 4;
   const radius = size / 2 - strokeWidth;
@@ -86,7 +90,17 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
   return (
     <Animated.View style={{ width: size, height: size, transform: [{ scale }] }}>
       <View style={[styles.imageClip, { width: size, height: size, borderRadius: size / 2 }]}>
-        <Image source={{ uri }} style={{ width: size, height: size }} resizeMode="cover" />
+        {isVideo ? (
+          <LinearGradient
+            colors={['#1F1D36', '#0E0D1B']}
+            style={[styles.videoCenter, { width: size, height: size }]}
+          >
+            <Ionicons name="videocam" size={size * 0.3} color="#C4B5FD" />
+            <Text style={styles.videoBadge}>VIDEO</Text>
+          </LinearGradient>
+        ) : (
+          <Image source={{ uri }} style={{ width: size, height: size }} resizeMode="cover" />
+        )}
       </View>
       <Svg width={size} height={size} style={StyleSheet.absoluteFill}>
         <Circle
@@ -118,5 +132,16 @@ const styles = StyleSheet.create({
   imageClip: {
     overflow: 'hidden',
     backgroundColor: '#12121A',
+  },
+  videoCenter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  videoBadge: {
+    marginTop: 6,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    color: '#C4B5FD',
   },
 });

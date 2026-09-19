@@ -73,14 +73,24 @@ export type IdentifyUpload = {
   uri: string;
   fileName?: string | null;
   mimeType?: string | null;
+  type?: 'image' | 'video';
 };
+
+export function isVideoUri(uri?: string | null, mimeType?: string | null): boolean {
+  if (!uri) return false;
+  if (mimeType?.startsWith('video/')) return true;
+  const clean = uri.split('?')[0].toLowerCase();
+  return /\.(mp4|mov|webm|m4v|mkv)$/i.test(clean);
+}
 
 async function buildIdentifyForm(upload: IdentifyUpload): Promise<FormData> {
   const form = new FormData();
+  const isVideo = upload.type === 'video' || isVideoUri(upload.uri, upload.mimeType);
+  const type = isVideo ? 'video' : 'image';
   const filename = uploadFilename(upload.uri, upload.fileName, upload.mimeType);
   const blob = await readUriAsBlob(upload.uri);
-  form.append('image', blob, filename);
-  form.append('type', 'image');
+  form.append(type, blob, filename);
+  form.append('type', type);
   form.append('origin', 'app');
   form.append('device_id', await getDeviceId());
   return form;
