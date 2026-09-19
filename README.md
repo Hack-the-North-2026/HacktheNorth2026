@@ -2,6 +2,8 @@
 
 Fit Stealer is a full-stack AI app designed to extract fashion outfits directly from TikTok videos, match clothing items via Vision-Language Models (VLM) & reverse search agents, and provide direct e-commerce purchase links.
 
+The long-term vision is **Shazam for anything on your screen**, starting with clothing. See [OVERVIEW.md](./OVERVIEW.md) for product goals, MVP scope, and the app-first then device-native plan.
+
 ---
 
 ## 🏗️ Project Architecture
