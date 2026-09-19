@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { startIdentifyJob } from '../lib/api';
+import { startIdentifyJob, getIdentifyJob } from '../lib/api';
 import { setJobPreview } from '../lib/resultStore';
 import { CaptureButton } from '../components/CaptureButton';
 import { ScanningCircle } from '../components/ScanningCircle';
@@ -14,9 +14,8 @@ import { BACKGROUND } from '../lib/theme';
 
 type Phase = 'idle' | 'scanning' | 'revealing';
 
-// The real identify job has no fixed duration — this only paces the ring's
-// own decorative sweep, not the actual wait.
-const SCAN_RING_DURATION_MS = 12000;
+const POLL_MS = 400;
+const POLL_DEADLINE_MS = 90_000;
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -26,7 +25,9 @@ export default function HomeScreen() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [uri, setUri] = useState<string | null>(null);
   const [circleOrigin, setCircleOrigin] = useState({ x: 0, y: 0 });
+  const [jobDone, setJobDone] = useState(false);
   const jobIdRef = useRef<string | null>(null);
+  const ringFinishedRef = useRef<(() => void) | null>(null);
 
   const idleOpacity = useRef(new Animated.Value(1)).current;
   const scanOpacity = useRef(new Animated.Value(0)).current;
@@ -45,12 +46,31 @@ export default function HomeScreen() {
 
   const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
     setUri(asset.uri);
+    setJobDone(false);
     setPhase('scanning');
     setIdleVisible(false);
     try {
       const job = await startIdentifyJob(asset);
       setJobPreview(job.job_id, asset.uri);
       jobIdRef.current = job.job_id;
+
+      // Keep the circle up until the job is actually finished — starting the
+      // job only means it was accepted, not that a result exists yet.
+      const started = Date.now();
+      let latest = job;
+      while (latest.status !== 'done' && latest.status !== 'error') {
+        if (Date.now() - started > POLL_DEADLINE_MS) {
+          throw new Error('This photo took too long to identify. Try another screenshot.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        latest = await getIdentifyJob(job.job_id);
+      }
+
+      // Let the ring's fast finish animation land before rippling away.
+      await new Promise<void>((resolve) => {
+        ringFinishedRef.current = resolve;
+        setJobDone(true);
+      });
       setPhase('revealing');
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : 'Could not process that screenshot.';
@@ -118,7 +138,12 @@ export default function HomeScreen() {
         {uri && phase !== 'idle' && (
           <View onLayout={onCircleLayout} style={styles.circleStack}>
             <SilhouetteFlash active={phase === 'scanning'} size={260} />
-            <ScanningCircle uri={uri} size={176} durationMs={SCAN_RING_DURATION_MS} />
+            <ScanningCircle
+              uri={uri}
+              size={176}
+              done={jobDone}
+              onFinished={() => ringFinishedRef.current?.()}
+            />
           </View>
         )}
         <Text style={styles.scanTitle}>Identifying your fit</Text>
