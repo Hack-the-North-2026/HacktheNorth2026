@@ -163,6 +163,7 @@ The frontend talks to the backend on port **4000**. The backend talks to the AI 
 | ------ | --- | --- |
 | `GET`  | `/health` | Server health status check |
 | `POST` | `/api/identify` | Stage 1: multipart image → clothing items + source links |
+| `POST` | `/tools/source-rank` | Internal AI tool: garment + chip → ranked Shopify matches |
 | `POST` | `/api/process-url` | Legacy stub; do not build Stage 1 on this |
 
 ---

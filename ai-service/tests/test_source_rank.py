@@ -18,6 +18,8 @@ from services.shopify_filter import (  # noqa: E402
     search_shopify_catalog,
 )
 from services.source_and_rank import source_and_rank  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from main import app  # noqa: E402
 
 
 GARMENT = {
@@ -100,6 +102,29 @@ class ShopifyTests(unittest.TestCase):
         with self.assertRaises(ShopifyCatalogError):
             search_shopify_catalog(GARMENT, session=session)
 
+    @patch("services.shopify_filter.time.sleep")
+    def test_transient_catalog_error_retries_once(self, sleep):
+        failed = Mock()
+        failed.raise_for_status.return_value = None
+        failed.json.return_value = {"error": {"message": "Service error. Try again later."}}
+        recovered = Mock()
+        recovered.raise_for_status.return_value = None
+        recovered.json.return_value = {
+            "result": {
+                "structuredContent": {
+                    "products": [
+                        {"title": "Recovered Jacket", "url": "https://shop.example/recovered"}
+                    ]
+                }
+            }
+        }
+        session = Mock()
+        session.post.side_effect = [failed, recovered]
+        result = search_shopify_catalog(GARMENT, session=session)
+        self.assertEqual(result[0]["title"], "Recovered Jacket")
+        self.assertEqual(session.post.call_count, 2)
+        sleep.assert_called_once()
+
 
 class RankerTests(unittest.TestCase):
     def test_model_selects_indexes_without_rewriting_products(self):
@@ -157,6 +182,35 @@ class RankerTests(unittest.TestCase):
         rank.return_value = []
         self.assertEqual(source_and_rank(GARMENT, encoded), [])
         self.assertEqual(search.call_args.args[1], encoded)
+
+
+class SourceRankEndpointTests(unittest.TestCase):
+    @patch("main.source_and_rank")
+    def test_dev2_chip_contract_reaches_source_rank(self, source_rank):
+        source_rank.return_value = [
+            {
+                "title": "Biker Jacket",
+                "url": "https://shop.example/jacket",
+                "source": "shopify",
+                "match_type": "similar",
+                "confidence": 0.9,
+                "reason": "Same black leather biker silhouette.",
+            }
+        ]
+        response = TestClient(app).post(
+            "/tools/source-rank",
+            json={
+                "garment": GARMENT,
+                "chip": {"content_type": "image/jpeg", "data": "YWJj"},
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["matches"][0]["match_type"], "similar")
+        source_rank.assert_called_once_with(GARMENT, "YWJj")
+
+    def test_probe_body_proves_route_exists(self):
+        response = TestClient(app).post("/tools/source-rank", json={})
+        self.assertEqual(response.status_code, 422)
 
 
 if __name__ == "__main__":

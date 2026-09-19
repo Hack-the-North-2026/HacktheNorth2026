@@ -35,8 +35,8 @@ export function isImageUpload(file) {
 export function parseMockFlags() {
   const raw = process.env.IDENTIFY_MOCK;
   if (raw === undefined) {
-    // Dev 4 has no HTTP tool yet; See is live on FastAPI.
-    return new Set(['source']);
+    // Stage 1 is live by default now that See and Source/Rank are implemented.
+    return new Set();
   }
   const trimmed = raw.trim().toLowerCase();
   if (!trimmed || trimmed === 'none' || trimmed === '0') return new Set();
