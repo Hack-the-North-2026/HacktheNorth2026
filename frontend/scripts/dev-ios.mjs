@@ -1,7 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import qrcode from 'qrcode-terminal';
 
 const DEVICE = 'iPhone 17';
 const PORT = 3000;
@@ -13,11 +15,37 @@ const STATUS_URLS = [
   `http://[::1]:${PORT}/status`,
 ];
 
+function getLocalIp() {
+  const interfaces = os.networkInterfaces();
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name]) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
+function printQRCode() {
+  const ip = getLocalIp();
+  const lanExpoUrl = `exp://${ip}:${PORT}`;
+  console.log('\n======================================================');
+  console.log(`Scan this QR code in Expo Go app (iOS/Android):`);
+  console.log(`URL: ${lanExpoUrl}`);
+  console.log('======================================================');
+  qrcode.generate(lanExpoUrl, { small: true });
+  console.log('======================================================\n');
+}
+
 function run(command, args) {
   return spawnSync(command, args, { encoding: 'utf8' });
 }
 
 function bootSimulator() {
+  if (process.platform !== 'darwin') {
+    return;
+  }
   run('xcrun', ['simctl', 'boot', DEVICE]);
   run('open', ['-a', 'Simulator']);
   const bootStatus = run('xcrun', ['simctl', 'bootstatus', 'booted', '-b']);
@@ -52,12 +80,13 @@ async function waitForMetro() {
 }
 
 async function openOnSimulator() {
+  if (process.platform !== 'darwin') return;
   const launch = run('xcrun', ['simctl', 'launch', 'booted', EXPO_GO_BUNDLE_ID]);
   if (launch.status !== 0) {
     console.warn(
       'Expo Go is not installed on the simulator yet. It will be installed the next time Expo can reach the device.',
     );
-    console.warn(launch.stderr.trim());
+    console.warn(launch.stderr?.trim());
   }
   await delay(2500);
 
@@ -76,10 +105,16 @@ async function openOnSimulator() {
 
 bootSimulator();
 
-const expoBin = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../node_modules/.bin/expo');
+const isWin = process.platform === 'win32';
+const expoBin = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  isWin ? '../node_modules/.bin/expo.cmd' : '../node_modules/.bin/expo'
+);
+
 const expo = spawn(expoBin, ['start', '--port', String(PORT)], {
   stdio: 'inherit',
   env: process.env,
+  shell: isWin,
 });
 
 waitForMetro()
@@ -88,7 +123,10 @@ waitForMetro()
       console.warn('Metro did not become ready; skipping simulator open.');
       return;
     }
-    await openOnSimulator();
+    printQRCode();
+    if (process.platform === 'darwin') {
+      await openOnSimulator();
+    }
   })
   .catch((error) => {
     console.warn(`Could not open iOS Simulator: ${error.message}`);
@@ -97,3 +135,5 @@ waitForMetro()
 expo.on('exit', (code) => {
   process.exit(code ?? 0);
 });
+
+

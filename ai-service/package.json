@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "sh -c 'if [ -x ./venv/bin/python ]; then ./venv/bin/python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000; else python3 -m uvicorn main:app --reload --host 0.0.0.0 --port 8000; fi'",
-    "start": "sh -c 'if [ -x ./venv/bin/python ]; then ./venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 8000; else python3 -m uvicorn main:app --host 0.0.0.0 --port 8000; fi'"
+    "dev": "node start.js --dev",
+    "start": "node start.js"
   }
 }
