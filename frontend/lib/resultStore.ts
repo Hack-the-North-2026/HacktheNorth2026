@@ -1,11 +1,9 @@
-import { IdentifyResult } from './types';
+const previews = new Map<string, string>();
 
-let lastResult: IdentifyResult | null = null;
-
-export function setLastResult(result: IdentifyResult) {
-  lastResult = result;
+export function setJobPreview(jobId: string, uri: string) {
+  previews.set(jobId, uri);
 }
 
-export function getLastResult(): IdentifyResult | null {
-  return lastResult;
+export function getJobPreview(jobId: string): string | null {
+  return previews.get(jobId) ?? null;
 }

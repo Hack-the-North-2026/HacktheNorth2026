@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Alert, Image } from 'react-native';
 import { useRouter } from 'expo-router';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { identifyImage } from '../lib/api';
-import { setLastResult } from '../lib/resultStore';
+import { startIdentifyJob } from '../lib/api';
+import { setJobPreview } from '../lib/resultStore';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -14,11 +15,12 @@ export default function HomeScreen() {
     setUri(imageUri);
     setLoading(true);
     try {
-      const result = await identifyImage(imageUri);
-      setLastResult(result);
-      router.push('/results');
-    } catch (error: any) {
-      Alert.alert('Identify Failed', error.message || 'Could not process that screenshot.');
+      const job = await startIdentifyJob(imageUri);
+      setJobPreview(job.job_id, imageUri);
+      router.push(`/job/${job.job_id}`);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Could not process that screenshot.';
+      Alert.alert('Identify Failed', message);
     } finally {
       setLoading(false);
     }
@@ -54,7 +56,7 @@ export default function HomeScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <Text style={styles.title}>Fit Stealer</Text>
       <Text style={styles.subtitle}>Upload a screenshot of an outfit to find it</Text>
 
@@ -74,7 +76,7 @@ export default function HomeScreen() {
           <Text style={styles.secondaryButtonText}>Take Photo</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 

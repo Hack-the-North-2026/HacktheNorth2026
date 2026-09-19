@@ -31,6 +31,9 @@ export const FitCard: React.FC<FitCardProps> = ({ match }) => {
             {match.currency ? `${match.currency} ` : ''}{match.price}
           </Text>
         )}
+        {match.reason ? (
+          <Text style={styles.reason} numberOfLines={2}>{match.reason}</Text>
+        ) : null}
         <TouchableOpacity style={styles.buyButton} onPress={handlePress}>
           <Text style={styles.buyButtonText}>View Product</Text>
         </TouchableOpacity>
@@ -89,6 +92,11 @@ const styles = StyleSheet.create({
     color: '#10B981',
     fontWeight: '700',
     fontSize: 16,
+  },
+  reason: {
+    color: '#9CA3AF',
+    fontSize: 12,
+    lineHeight: 16,
   },
   buyButton: {
     backgroundColor: '#6366F1',

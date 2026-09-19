@@ -113,7 +113,10 @@ const expoBin = path.resolve(
 
 const expo = spawn(expoBin, ['start', '--port', String(PORT)], {
   stdio: 'inherit',
-  env: process.env,
+  env: {
+    ...process.env,
+    EXPO_NO_TELEMETRY: '1',
+  },
   shell: isWin,
 });
 

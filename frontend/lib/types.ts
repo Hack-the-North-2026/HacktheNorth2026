@@ -45,6 +45,16 @@ export type Match = ProductCandidate & {
 
 export type IdentifyStatus = 'queued' | 'ingesting' | 'seeing' | 'sourcing' | 'ranking' | 'done' | 'error';
 
+export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string> = {
+  queued: 'Queuing your screenshot…',
+  ingesting: 'Preparing the image…',
+  seeing: 'Looking at the outfit…',
+  sourcing: 'Searching shops…',
+  ranking: 'Picking the best matches…',
+  done: 'Found your fit',
+  error: 'Something went wrong',
+};
+
 export type IdentifyResult = {
   job_id: string;
   status: IdentifyStatus;

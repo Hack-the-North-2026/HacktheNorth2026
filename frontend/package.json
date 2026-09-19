@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "main": "expo-router/entry",
   "dependencies": {
+    "@sentry/react-native": "~7.11.0",
     "expo": "~57.0.24",
     "expo-constants": "~57.0.19",
     "expo-haptics": "~57.0.3",
@@ -19,6 +20,7 @@
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
+    "babel-preset-expo": "^57.0.12",
     "qrcode-terminal": "^0.12.0",
     "typescript": "~6.0.3"
   },
