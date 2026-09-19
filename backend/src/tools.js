@@ -137,23 +137,22 @@ export async function resolveSourceMode(forceMock) {
   if (cachedSourceMode) return cachedSourceMode;
 
   try {
-    const { response } = await postJson('/tools/source-rank', {}, 2000);
-    if (response.status !== 404) {
+    const response = await fetch(`${AI_SERVICE_URL()}/health`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(2000),
+    });
+    const data = await parseJson(response);
+    const endpoints = Array.isArray(data.endpoints) ? data.endpoints : [];
+    if (response.ok && endpoints.includes('/tools/source-rank')) {
       cachedSourceMode = 'source-rank';
       return cachedSourceMode;
     }
-  } catch {
-    // AI service down or no route — fall through.
-  }
-
-  try {
-    const { response } = await postJson('/tools/source', {}, 2000);
-    if (response.status !== 404) {
+    if (response.ok && endpoints.includes('/tools/source')) {
       cachedSourceMode = 'source';
       return cachedSourceMode;
     }
   } catch {
-    // ignore
+    // AI service down or no source route — fall through to fixtures.
   }
 
   cachedSourceMode = 'mock';

@@ -5,6 +5,7 @@ Perception tool server for the See and Crop pipeline steps.
 Endpoints (Stage 1):
   POST /tools/see     — Baseten VLM → Garment[]
   POST /tools/crop    — PIL bbox cropper → chip files
+  POST /tools/source-rank — Shopify Global Catalog → ranked matches
   POST /api/identify  — Fallback: see + crop in one call (before orchestrator)
   GET  /health        — Liveness probe
 
@@ -19,6 +20,7 @@ import os
 import tempfile
 import uuid
 from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -31,6 +33,7 @@ load_dotenv()
 # Import perception services
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
 from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
+from services.source_and_rank import source_and_rank  # noqa: E402
 
 _sentry_dsn = os.getenv("SENTRY_DSN")
 if _sentry_dsn:
@@ -90,6 +93,20 @@ class IdentifyResponse(BaseModel):
     image_path: str
 
 
+class ChipPayload(BaseModel):
+    content_type: str
+    data: str
+
+
+class SourceRankRequest(BaseModel):
+    garment: dict
+    chip: Optional[ChipPayload] = None
+
+
+class SourceRankResponse(BaseModel):
+    matches: list[dict]
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -101,7 +118,12 @@ def health_check():
         "status": "ok",
         "service": "Fit Stealer AI Service",
         "version": "0.2.0",
-        "endpoints": ["/tools/see", "/tools/crop", "/api/identify"],
+        "endpoints": [
+            "/tools/see",
+            "/tools/crop",
+            "/tools/source-rank",
+            "/api/identify",
+        ],
     }
 
 
@@ -131,7 +153,7 @@ def _find_image_file(target: str) -> Path | None:
 
 @app.post("/tools/see", response_model=SeeResponse)
 async def tools_see(
-    image: UploadFile | None = File(default=None),
+    image: Optional[UploadFile] = File(default=None),
 ):
     """
     See step — send one image to Baseten VLM, get back Garment[].
@@ -216,6 +238,20 @@ def tools_crop(body: CropRequest):
         raise HTTPException(status_code=500, detail=f"Crop error: {e}")
 
     return CropResponse(garments=updated)
+
+
+# ---------------------------------------------------------------------------
+# POST /tools/source-rank
+# Accepts Dev 2's JSON { garment, chip?: { content_type, data } }.
+# Runs Shopify Global Catalog sourcing followed by the OpenAI ranker.
+# ---------------------------------------------------------------------------
+
+@app.post("/tools/source-rank", response_model=SourceRankResponse)
+def tools_source_rank(body: SourceRankRequest):
+    """Return at most three exact/similar matches for one garment."""
+    chip_base64 = body.chip.data if body.chip else None
+    matches = source_and_rank(body.garment, chip_base64)
+    return SourceRankResponse(matches=matches)
 
 
 # ---------------------------------------------------------------------------

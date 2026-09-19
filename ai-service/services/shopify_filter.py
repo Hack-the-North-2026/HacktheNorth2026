@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -220,7 +221,30 @@ def search_shopify_catalog(
         payload = response.json()
     except (requests.RequestException, ValueError) as exc:
         raise ShopifyCatalogError(f"Shopify Global Catalog request failed: {exc}") from exc
-    products = _extract_products(payload)
+    try:
+        products = _extract_products(payload)
+    except ShopifyCatalogError as exc:
+        message = str(exc).lower()
+        transient = any(
+            marker in message
+            for marker in ("service error", "temporar", "rate limit", "try again")
+        )
+        if not transient:
+            raise
+        time.sleep(0.25)
+        try:
+            response = client.post(
+                SHOPIFY_CATALOG_URL,
+                json=body,
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            products = _extract_products(response.json())
+        except (requests.RequestException, ValueError) as retry_exc:
+            raise ShopifyCatalogError(
+                f"Shopify Global Catalog retry failed: {retry_exc}"
+            ) from retry_exc
     candidates = [normalize_product(product) for product in products]
     return [candidate for candidate in candidates if candidate is not None][:limit]
 
