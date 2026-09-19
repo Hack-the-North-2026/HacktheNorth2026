@@ -34,6 +34,19 @@
           "cameraPermission": "Fit Stealer needs camera access to capture an outfit to identify."
         }
       ],
+      [
+        "expo-sharing",
+        {
+          "ios": {
+            "enabled": true,
+            "extensionBundleIdentifier": "com.fitstealer.app.ShareExtension",
+            "appGroupId": "group.com.fitstealer.app",
+            "activationRule": {
+              "supportsImageWithMaxCount": 1
+            }
+          }
+        }
+      ],
       "@sentry/react-native"
     ]
   }

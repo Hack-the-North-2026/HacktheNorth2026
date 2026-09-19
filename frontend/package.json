@@ -13,6 +13,7 @@
     "expo-linear-gradient": "~57.0.2",
     "expo-linking": "~57.0.10",
     "expo-router": "~57.0.22",
+    "expo-sharing": "~57.0.21",
     "expo-status-bar": "~57.0.1",
     "fit-stealer": "file:..",
     "react": "19.2.3",
