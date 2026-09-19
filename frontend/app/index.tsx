@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { StyleSheet, Text, View, Animated, Alert } from 'react-native';
+import { StyleSheet, Text, View, Animated, Alert, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob } from '../lib/api';
@@ -8,6 +8,8 @@ import { CaptureButton } from '../components/CaptureButton';
 import { ScanningCircle } from '../components/ScanningCircle';
 
 type Phase = 'idle' | 'scanning';
+
+const useNativeDriver = Platform.OS !== 'web';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -20,17 +22,17 @@ export default function HomeScreen() {
   const setPhaseAnimated = (next: Phase) => {
     setPhase(next);
     Animated.parallel([
-      Animated.timing(idleOpacity, { toValue: next === 'idle' ? 1 : 0, duration: 320, useNativeDriver: true }),
-      Animated.timing(scanOpacity, { toValue: next === 'scanning' ? 1 : 0, duration: 320, useNativeDriver: true }),
+      Animated.timing(idleOpacity, { toValue: next === 'idle' ? 1 : 0, duration: 320, useNativeDriver }),
+      Animated.timing(scanOpacity, { toValue: next === 'scanning' ? 1 : 0, duration: 320, useNativeDriver }),
     ]).start();
   };
 
-  const runIdentify = async (imageUri: string) => {
-    setUri(imageUri);
+  const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
+    setUri(asset.uri);
     setPhaseAnimated('scanning');
     try {
-      const job = await startIdentifyJob(imageUri);
-      setJobPreview(job.job_id, imageUri);
+      const job = await startIdentifyJob(asset);
+      setJobPreview(job.job_id, asset.uri);
       router.push(`/job/${job.job_id}`);
       setTimeout(() => setPhaseAnimated('idle'), 400);
     } catch (error: unknown) {
@@ -48,7 +50,7 @@ export default function HomeScreen() {
     }
     const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.9 });
     if (!result.canceled && result.assets[0]) {
-      runIdentify(result.assets[0].uri);
+      runIdentify(result.assets[0]);
     }
   };
 
@@ -60,13 +62,13 @@ export default function HomeScreen() {
     }
     const result = await ImagePicker.launchCameraAsync({ quality: 0.9 });
     if (!result.canceled && result.assets[0]) {
-      runIdentify(result.assets[0].uri);
+      runIdentify(result.assets[0]);
     }
   };
 
   return (
     <View style={styles.container}>
-      <Animated.View style={[styles.layer, { opacity: idleOpacity }]} pointerEvents={phase === 'idle' ? 'auto' : 'none'}>
+      <Animated.View style={[styles.layer, { opacity: idleOpacity, pointerEvents: phase === 'idle' ? 'auto' : 'none' }]}>
         <Text style={styles.title}>Fit Stealer</Text>
         <View style={styles.buttonWrap}>
           <CaptureButton disabled={phase !== 'idle'} onPress={pickFromLibrary} onLongPress={takePhoto} />
@@ -75,7 +77,7 @@ export default function HomeScreen() {
         <Text style={styles.subCaption}>Hold to use the camera</Text>
       </Animated.View>
 
-      <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity }]} pointerEvents="none">
+      <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity, pointerEvents: 'none' }]}>
         {uri && phase === 'scanning' && (
           <ScanningCircle uri={uri} size={176} durationMs={12000} />
         )}
