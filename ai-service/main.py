@@ -17,7 +17,9 @@ The Express orchestrator (backend/) owns the pipeline loop.
 from __future__ import annotations
 
 import os
+import logging
 import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -26,6 +28,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from logging_config import configure_logging
+
+configure_logging()
+logger = logging.getLogger("fit_stealer.api")
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 load_dotenv()
@@ -60,6 +66,42 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def request_logging(request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception(
+            "http.unhandled",
+            extra={
+                "context": {
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "duration_ms": round((time.perf_counter() - started) * 1000),
+                }
+            },
+        )
+        raise
+    response.headers["x-request-id"] = request_id
+    context = {
+        "request_id": request_id,
+        "method": request.method,
+        "path": request.url.path,
+        "status": response.status_code,
+        "duration_ms": round((time.perf_counter() - started) * 1000),
+    }
+    if response.status_code >= 500:
+        logger.error("http.request", extra={"context": context})
+    elif response.status_code >= 400:
+        logger.warning("http.request", extra={"context": context})
+    else:
+        logger.info("http.request", extra={"context": context})
+    return response
 
 # Temp directory for uploaded images and chip output
 _UPLOAD_DIR = Path(tempfile.gettempdir()) / "fit-stealer-uploads"
@@ -191,8 +233,10 @@ async def tools_see(
     try:
         result = analyze_frames_with_vlm([image_path])
     except ValueError as e:
+        logger.warning("see.invalid_request", extra={"context": {"error": str(e)}})
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.exception("see.failed")
         raise HTTPException(status_code=502, detail=f"Baseten error: {e}")
 
     return SeeResponse(
@@ -235,6 +279,7 @@ def tools_crop(body: CropRequest):
     try:
         updated = crop_garments(image_path, body.garments, str(_CHIPS_DIR))
     except Exception as e:
+        logger.exception("crop.failed")
         raise HTTPException(status_code=500, detail=f"Crop error: {e}")
 
     return CropResponse(garments=updated)
@@ -292,8 +337,10 @@ async def api_identify(
     try:
         result = analyze_frames_with_vlm([image_path])
     except ValueError as e:
+        logger.warning("identify.invalid_request", extra={"context": {"error": str(e)}})
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.exception("identify.see_failed")
         raise HTTPException(status_code=502, detail=f"Baseten error: {e}")
 
     garments = result.get("garments", [])
@@ -302,7 +349,7 @@ async def api_identify(
     try:
         garments = crop_garments(image_path, garments, str(_CHIPS_DIR))
     except Exception as e:
-        print(f"[warn] Crop failed: {e}")
+        logger.exception("identify.crop_failed")
 
     return IdentifyResponse(
         garments=garments,

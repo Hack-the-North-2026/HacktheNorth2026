@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 from typing import Any
 
 from services.product_ranker import fallback_rank_candidates, rank_candidates
 from services.shopify_filter import ShopifyCatalogError, encode_chip, search_shopify_catalog
+
+logger = logging.getLogger("fit_stealer.source_rank")
 
 
 def source_and_rank(
@@ -28,10 +31,16 @@ def source_and_rank(
             )
         candidates = search_shopify_catalog(garment, chip_base64)
     except (OSError, ShopifyCatalogError, ValueError) as exc:
-        print(f"[warn] Shopify source failed for garment {garment.get('id', '?')}: {exc}")
+        logger.warning(
+            "shopify.failed",
+            extra={"context": {"garment_id": garment.get("id", "?"), "error": str(exc)}},
+        )
         return []
     try:
         return rank_candidates(garment, candidates)
     except Exception as exc:
-        print(f"[warn] OpenAI rank failed; using conservative fallback: {exc}")
+        logger.exception(
+            "rank.failed_using_fallback",
+            extra={"context": {"garment_id": garment.get("id", "?")}},
+        )
         return fallback_rank_candidates(garment, candidates)

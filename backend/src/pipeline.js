@@ -12,6 +12,7 @@ import {
 import { downscaleUpload } from './downscale.js';
 import { createJob, updateJob } from './jobs.js';
 import { Sentry } from './sentry.js';
+import { logger } from './logger.js';
 import { perceive, resolveSourceMode, sourceAndRank } from './tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -133,7 +134,7 @@ export function startIdentifyJob({ origin = 'app', file } = {}) {
 
   void runPipeline(job.job_id, file, ctx, jobOrigin)
     .catch((error) => {
-      console.error('[pipeline]', error);
+      logger.error('pipeline.failed', error, { job_id: job.job_id, origin: jobOrigin });
       commit(job.job_id, ctx, {
         status: 'error',
         error: isTimeoutError(error)
@@ -165,7 +166,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
     try {
       perceived = mocks.has('see') ? mockSeeResult() : await perceive(file);
     } catch (error) {
-      console.error('[see]', error.message);
+      logger.error('pipeline.see_failed', error, { job_id: jobId, origin });
       commit(jobId, ctx, {
         status: 'error',
         error: isTimeoutError(error)
@@ -182,7 +183,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       .filter((garment) => garment && garment.confidence >= 0.5);
 
     if (garments.length === 0) {
-      console.log('[identify]', { job_id: jobId, origin, status: 'done', garment_count: 0 });
+      logger.info('identify.completed', { job_id: jobId, origin, status: 'done', garment_count: 0 });
       commit(jobId, ctx, {
         status: 'done',
         outfit_summary: perceived?.outfit_summary || '',
@@ -217,7 +218,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
         }),
       );
     } catch (error) {
-      console.error('[source]', error.message);
+      logger.error('pipeline.source_failed', error, { job_id: jobId, origin });
       commit(jobId, ctx, {
         status: 'error',
         error: isTimeoutError(error)
@@ -228,7 +229,13 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
     }
 
     commit(jobId, ctx, { status: 'ranking' });
-    console.log('[identify]', { job_id: jobId, origin, status: 'done', garment_count: ranked.length });
+    logger.info('identify.completed', {
+      job_id: jobId,
+      origin,
+      status: 'done',
+      garment_count: ranked.length,
+      match_count: ranked.reduce((count, item) => count + item.matches.length, 0),
+    });
     commit(jobId, ctx, {
       status: 'done',
       items: scrubChipKeys(ranked),

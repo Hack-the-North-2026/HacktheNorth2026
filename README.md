@@ -98,6 +98,17 @@ This starts:
 - AI service: `http://localhost:8000`
 - The **iOS Simulator** (iPhone 17) with the app in Expo Go
 
+### Terminal logging
+
+`npm run dev` prints structured logs from the backend and AI service in the same
+terminal. Each entry includes a timestamp, severity, service, event, and useful
+request or job context. Warnings, HTTP failures, unhandled exceptions, and stack
+traces are shown without logging API keys, image bytes, or base64 chips.
+
+Set `LOG_LEVEL=debug` in `.env` to include routine job-poll requests. The default
+`LOG_LEVEL=info` keeps those polls quiet while still showing every warning and
+error.
+
 Health checks:
 
 - Backend: `http://localhost:4000/health`
