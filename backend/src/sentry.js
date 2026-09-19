@@ -2,6 +2,7 @@ import * as Sentry from '@sentry/node';
 
 const dsn = process.env.SENTRY_DSN || '';
 
+
 Sentry.init({
   dsn: dsn || undefined,
   enabled: Boolean(dsn),

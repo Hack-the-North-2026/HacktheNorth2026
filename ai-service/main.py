@@ -41,6 +41,7 @@ from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
 from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
 from services.source_and_rank import source_and_rank  # noqa: E402
 
+# Shared DSN with Expo and Express (root .env SENTRY_DSN)
 _sentry_dsn = os.getenv("SENTRY_DSN") or ""
 if _sentry_dsn:
     try:
