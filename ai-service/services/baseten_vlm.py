@@ -83,11 +83,13 @@ _GARMENT_SCHEMA = {
                             },
                             "chip_key":         {"type": "string"},
                             "accessibility_line": {"type": "string"},
+                            "source_frame_index": {"type": ["integer", "null"]},
                         },
                         "required": [
                             "id", "category", "description", "search_query",
                             "attributes", "brand", "brand_cues", "confidence",
                             "bbox", "chip_key", "accessibility_line",
+                            "source_frame_index",
                         ],
                         "additionalProperties": False,
                     },
@@ -112,7 +114,32 @@ Rules you MUST follow:
 5. Drop any item with confidence < 0.5.
 6. accessibility_line: one concise sentence describing the item for a visually impaired user.
 7. outfit_summary: one sentence summarizing the full look.
-8. Do NOT include people, faces, backgrounds, or non-clothing items."""
+8. Do NOT include people, faces, backgrounds, or non-clothing items.
+9. source_frame_index: set to null for single-image input."""
+
+_VIDEO_SYSTEM_PROMPT = """You are a precise fashion identification system analyzing video frames.
+
+You are given multiple labeled frames extracted from a short video. Each frame is labeled with its index and timestamp.
+
+Your task:
+1. FIRST, identify which frames show the CLEAREST and LEAST OBSTRUCTED view of the outfit. Prefer:
+   - Full-body or near-full-body shots
+   - Front-facing poses
+   - Frames WITHOUT text overlays, captions, stickers, or UI elements blocking clothing
+   - Frames with good lighting and no motion blur
+2. THEN, identify all visible clothing items and accessories from ONLY the best frames.
+3. If the same garment appears in multiple frames, merge them into one entry. Use the frame with the clearest view for the bbox.
+
+Rules you MUST follow:
+1. brand MUST be null unless a logo, label, or clothing tag is CLEARLY and LEGIBLY readable. Never guess.
+2. bbox is [x_min, y_min, x_max, y_max] normalized to 0.0–1.0 relative to the dimensions of the frame identified by source_frame_index.
+3. chip_key: set to an empty string — it will be filled in by the cropper.
+4. search_query must be highly specific and optimized for product catalog search.
+5. Drop any item with confidence < 0.5.
+6. accessibility_line: one concise sentence describing the item.
+7. outfit_summary: one sentence summarizing the full look across the best frames.
+8. source_frame_index: the integer index of the frame this garment was most clearly visible in.
+9. Do NOT include people, faces, backgrounds, or non-clothing items."""
 
 
 def _encode_image(image_path: str) -> str:
@@ -125,20 +152,27 @@ def _encode_image(image_path: str) -> str:
     return f"data:{mime};base64,{data}"
 
 
-def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
+def analyze_frames_with_vlm(
+    image_paths: list[str],
+    frame_metadata: list[dict] | None = None,
+) -> dict:
     """
     Send image frames to Baseten VLM and return Garment[] with outfit_summary.
 
     Args:
         image_paths: List of local file paths to .jpg/.png images.
                      Stage 1: list of length 1 (the screenshot).
-                     Stage 3: 2–5 keyframes.
+                     Stage 3: 2–8 keyframe candidates.
+        frame_metadata: Optional list of dicts with {index, timestamp, sharpness}
+                        for each image. When provided, images are labeled as
+                        video frames and the video-specific prompt is used.
+                        Must be the same length as image_paths.
 
     Returns:
         {
             "garments": [{ id, category, description, search_query, attributes,
                            brand, brand_cues, confidence, bbox, chip_key,
-                           accessibility_line }, ...],
+                           accessibility_line, source_frame_index }, ...],
             "outfit_summary": str
         }
     """
@@ -150,10 +184,13 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
     if not image_paths:
         raise ValueError("image_paths must not be empty")
 
+    is_video = frame_metadata is not None and len(frame_metadata) > 0
+
     logger.info(
-        "see — calling Baseten (%s) with %s image%s",
+        "see — calling Baseten (%s) with %s %s%s",
         model,
         len(image_paths),
+        "video frame" if is_video else "image",
         "" if len(image_paths) == 1 else "s",
     )
 
@@ -162,23 +199,50 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
         base_url="https://inference.baseten.co/v1",
     )
 
-    # Build image content blocks (one per frame)
-    image_blocks = [
-        {
-            "type": "image_url",
-            "image_url": {"url": _encode_image(p), "detail": "high"},
-        }
-        for p in image_paths
-    ]
+    # Build image content blocks — label each frame for video input
+    if is_video and frame_metadata:
+        image_blocks = []
+        for i, (p, meta) in enumerate(zip(image_paths, frame_metadata)):
+            ts = meta.get("timestamp", 0)
+            sharpness = meta.get("sharpness", 0)
+            label = f"[Frame {i} @ {ts:.1f}s | sharpness={sharpness:.0f}]"
+            image_blocks.append(
+                {"type": "text", "text": label}
+            )
+            image_blocks.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": _encode_image(p), "detail": "high"},
+                }
+            )
+    else:
+        image_blocks = [
+            {
+                "type": "image_url",
+                "image_url": {"url": _encode_image(p), "detail": "high"},
+            }
+            for p in image_paths
+        ]
 
-    frame_word = "image" if len(image_paths) == 1 else f"{len(image_paths)} frames"
-    user_text = (
-        f"Identify all visible clothing items and accessories in this {frame_word}. "
-        "Return the complete GarmentList JSON."
-    )
+    if is_video:
+        user_text = (
+            f"These are {len(image_paths)} frames extracted from a short video. "
+            "Select the frames with the clearest outfit views, then identify all "
+            "visible clothing items and accessories from those frames. "
+            "Merge duplicate garments seen across frames. "
+            "Return the complete GarmentList JSON."
+        )
+        system_prompt = _VIDEO_SYSTEM_PROMPT
+    else:
+        frame_word = "image" if len(image_paths) == 1 else f"{len(image_paths)} frames"
+        user_text = (
+            f"Identify all visible clothing items and accessories in this {frame_word}. "
+            "Return the complete GarmentList JSON."
+        )
+        system_prompt = _SYSTEM_PROMPT
 
     messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {
             "role": "user",
             "content": [{"type": "text", "text": user_text}, *image_blocks],
@@ -190,7 +254,7 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
         messages=messages,
         response_format=_GARMENT_SCHEMA,
         temperature=0.1,  # Low temp for consistent structured outputs
-        max_tokens=2048,
+        max_tokens=4096 if is_video else 2048,
     )
 
     raw = response.choices[0].message.content
@@ -209,6 +273,9 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
         if confidence < MIN_CONFIDENCE:
             dropped += 1
             continue
+        # Ensure source_frame_index is set
+        if garment.get("source_frame_index") is None and not is_video:
+            garment["source_frame_index"] = None
         kept.append(garment)
     result["garments"] = kept
     result["outfit_summary"] = result.get("outfit_summary") or ""

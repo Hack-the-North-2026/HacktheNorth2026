@@ -4,5 +4,6 @@ requests
 python-dotenv
 openai
 pillow
+numpy
 python-multipart
 sentry-sdk

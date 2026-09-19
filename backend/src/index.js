@@ -15,7 +15,7 @@ dotenv.config();
 await import('./sentry.js');
 const { connectMongo, mongoStatus } = await import('./db.js');
 const { getJob } = await import('./jobs.js');
-const { isImageUpload, startIdentifyJob } = await import('./pipeline.js');
+const { isImageUpload, isVideoUpload, startIdentifyJob } = await import('./pipeline.js');
 const { listRecentSearches, sanitizeDeviceId } = await import('./recentSearches.js');
 
 const app = express();
@@ -147,40 +147,56 @@ app.get('/recent-searches', async (req, res) => {
 });
 
 function handleIdentify(req, res) {
-  const type = String(req.body?.type || 'image');
+  if (!req.file) {
+    logger.warn('Upload rejected: no media file attached');
+    return res.status(400).json({ error: 'A file is required (multipart field "image" or "video").' });
+  }
+
+  const isVideo = isVideoUpload(req.file) || req.body?.type === 'video';
+  const type = isVideo ? 'video' : 'image';
   const origin = String(req.body?.origin || 'app');
 
-  if (type !== 'image') {
-    logger.warn('Upload rejected: Stage 1 accepts still images only');
-    return res.status(400).json({ error: 'Stage 1 accepts still images only.' });
-  }
-  if (!req.file) {
-    logger.warn('Upload rejected: no image file attached');
-    return res.status(400).json({ error: 'An image file is required (multipart field "image").' });
-  }
-  if (!isImageUpload(req.file)) {
-    logger.warn('Upload rejected: not a JPEG/PNG screenshot');
-    return res.status(400).json({ error: 'Upload a JPEG or PNG screenshot.' });
+  if (type === 'video') {
+    if (!isVideoUpload(req.file)) {
+      logger.warn('Upload rejected: not an MP4/MOV/WEBM video');
+      return res.status(400).json({ error: 'Upload an MP4, MOV, or WEBM video clip.' });
+    }
+  } else {
+    if (!isImageUpload(req.file)) {
+      logger.warn('Upload rejected: not a JPEG/PNG screenshot');
+      return res.status(400).json({ error: 'Upload a JPEG or PNG screenshot.' });
+    }
   }
 
-  const filename = decodeURIComponent(req.file.originalname || 'screenshot');
+  const filename = decodeURIComponent(req.file.originalname || (type === 'video' ? 'clip' : 'screenshot'));
   logger.blank();
-  logger.info(`Got image "${filename}" (${bytesLabel(req.file.size)}) from ${origin}`);
+  logger.info(`Got ${type} "${filename}" (${bytesLabel(req.file.size)}) from ${origin}`);
 
   const deviceId = req.body?.device_id;
-  const job = startIdentifyJob({ origin, file: req.file, deviceId });
+  const job = startIdentifyJob({ origin, file: req.file, deviceId, type });
   return res.json(job);
 }
 
+const uploadFields = upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'video', maxCount: 1 },
+  { name: 'file', maxCount: 1 },
+]);
+
 function identifyUpload(req, res, next) {
-  upload.single('image')(req, res, (err) => {
-    if (!err) return next();
-    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      logger.warn('Upload rejected: image is larger than 45 MB');
-      return res.status(400).json({ error: 'Image is too large (45 MB max).' });
+  uploadFields(req, res, (err) => {
+    if (!err) {
+      if (!req.file) {
+        req.file = req.files?.video?.[0] || req.files?.image?.[0] || req.files?.file?.[0];
+      }
+      return next();
     }
-    logger.warn(`Upload rejected: ${err.message || 'could not read the image'}`);
-    return res.status(400).json({ error: err.message || 'Could not read the uploaded image.' });
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      logger.warn('Upload rejected: file is larger than 45 MB');
+      return res.status(400).json({ error: 'File is too large (45 MB max).' });
+    }
+    logger.warn(`Upload rejected: ${err.message || 'could not read the file'}`);
+    return res.status(400).json({ error: err.message || 'Could not read the uploaded file.' });
   });
 }
 

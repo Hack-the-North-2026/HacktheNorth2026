@@ -14,7 +14,7 @@ import { createJob, updateJob } from './jobs.js';
 import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
 import { Sentry } from './sentry.js';
 import { jobMsg, logger } from './logger.js';
-import { perceive, resolveSourceMode, sourceAndRank } from './tools.js';
+import { perceive, perceiveVideo, resolveSourceMode, sourceAndRank } from './tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOCK_RESULT = JSON.parse(
@@ -24,13 +24,22 @@ const MOCK_RESULT = JSON.parse(
 const ALLOWED_ORIGINS = new Set(['app', 'android_overlay', 'android_qs', 'share']);
 const IMAGE_MIME = /^image\/(jpeg|jpg|pjpeg|png|webp|heic|heif|gif)$/i;
 const IMAGE_EXT = /\.(jpe?g|png|webp|heic|heif|gif)$/i;
+const VIDEO_MIME = /^video\/(mp4|quicktime|webm|x-m4v|x-matroska)$/i;
+const VIDEO_EXT = /\.(mp4|mov|webm|m4v|mkv)$/i;
 const ALLOWED_MATCH = new Set(['exact', 'similar']);
-const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 90_000);
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 120_000);
 
 export function isImageUpload(file) {
   if (!file) return false;
   if (file.mimetype && IMAGE_MIME.test(file.mimetype)) return true;
   if (file.originalname && IMAGE_EXT.test(file.originalname)) return true;
+  return false;
+}
+
+export function isVideoUpload(file) {
+  if (!file) return false;
+  if (file.mimetype && VIDEO_MIME.test(file.mimetype)) return true;
+  if (file.originalname && VIDEO_EXT.test(file.originalname)) return true;
   return false;
 }
 
@@ -58,7 +67,8 @@ function normalizeGarment(garment, index) {
     confidence: Number(garment.confidence ?? 0),
     bbox: Array.isArray(garment.bbox) ? garment.bbox : [0, 0, 0, 0],
     chip_key: garment.chip_key || '',
-    accessibility_line: garment.accessibility_line || garment.description || '',
+    accessibility_line: garment.accessibility_line || '',
+    source_frame_index: garment.source_frame_index ?? null,
   };
 }
 
@@ -118,8 +128,9 @@ function commit(jobId, ctx, patch) {
   return next;
 }
 
-export function startIdentifyJob({ origin = 'app', file, deviceId } = {}) {
+export function startIdentifyJob({ origin = 'app', file, deviceId, type } = {}) {
   const jobOrigin = ALLOWED_ORIGINS.has(origin) ? origin : 'app';
+  const mediaType = type === 'video' || isVideoUpload(file) ? 'video' : 'image';
   const job = createJob({
     job_id: randomUUID(),
     status: 'queued',
@@ -130,22 +141,22 @@ export function startIdentifyJob({ origin = 'app', file, deviceId } = {}) {
   const ctx = { cancelled: false, deviceId: sanitizeDeviceId(deviceId) };
   const limit = setTimeout(() => {
     ctx.cancelled = true;
-    logger.error(jobMsg(job.job_id, 'timed out — photo took too long to identify'));
+    logger.error(jobMsg(job.job_id, `timed out — ${mediaType} took too long to identify`));
     updateJob(job.job_id, {
       status: 'error',
-      error: 'This photo took too long to identify. Try another screenshot.',
+      error: `This ${mediaType} took too long to identify. Try another ${mediaType === 'video' ? 'clip' : 'screenshot'}.`,
     });
   }, JOB_TIMEOUT_MS);
   limit.unref();
 
-  void runPipeline(job.job_id, file, ctx, jobOrigin)
+  void runPipeline(job.job_id, file, ctx, jobOrigin, mediaType)
     .catch((error) => {
       logger.error(jobMsg(job.job_id, 'pipeline failed'), error);
       commit(job.job_id, ctx, {
         status: 'error',
         error: isTimeoutError(error)
-          ? 'This photo took too long to identify. Try another screenshot.'
-          : 'Something went wrong identifying this photo. Try another screenshot.',
+          ? `This ${mediaType} took too long to identify. Try another ${mediaType === 'video' ? 'clip' : 'screenshot'}.`
+          : `Something went wrong identifying this ${mediaType}. Try another ${mediaType === 'video' ? 'clip' : 'screenshot'}.`,
       });
     })
     .finally(() => {
@@ -156,18 +167,20 @@ export function startIdentifyJob({ origin = 'app', file, deviceId } = {}) {
   return job;
 }
 
-async function runPipeline(jobId, file, ctx, origin = 'app') {
+async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image') {
   const mocks = parseMockFlags();
   const temps = [];
 
   return Sentry.startSpan(
-    { name: 'identify', op: 'identify', attributes: { job_id: jobId, origin } },
+    { name: 'identify', op: 'identify', attributes: { job_id: jobId, origin, media_type: mediaType } },
     async () => {
   try {
-    logger.info(jobMsg(jobId, `started — identifying photo (from ${origin})`));
+    logger.info(jobMsg(jobId, `started — identifying ${mediaType} (from ${origin})`));
     commit(jobId, ctx, { status: 'ingesting' });
-    logger.info(jobMsg(jobId, 'ingest — preparing photo'));
-    await downscaleUpload(file, jobId);
+    logger.info(jobMsg(jobId, `ingest — preparing ${mediaType}`));
+    if (mediaType === 'image') {
+      await downscaleUpload(file, jobId);
+    }
     commit(jobId, ctx, { status: 'seeing' });
 
     let perceived;
@@ -175,6 +188,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       if (mocks.has('see')) {
         logger.warn(jobMsg(jobId, 'see — using mock clothes (IDENTIFY_MOCK=see)'));
         perceived = mockSeeResult();
+      } else if (mediaType === 'video') {
+        perceived = await perceiveVideo(file, jobId);
       } else {
         perceived = await perceive(file, jobId);
       }
@@ -183,8 +198,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       commit(jobId, ctx, {
         status: 'error',
         error: isTimeoutError(error)
-          ? 'This photo took too long to analyze. Try another screenshot.'
-          : "We couldn't analyze this photo. Try another screenshot.",
+          ? `This ${mediaType} took too long to analyze. Try another ${mediaType === 'video' ? 'clip' : 'screenshot'}.`
+          : `We couldn't analyze this ${mediaType}. Try another ${mediaType === 'video' ? 'clip' : 'screenshot'}.`,
       });
       return;
     }
@@ -196,7 +211,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       .filter((garment) => garment && garment.confidence >= 0.5);
 
     if (garments.length === 0) {
-      logger.info(jobMsg(jobId, 'done — no clothes found in this photo'));
+      logger.info(jobMsg(jobId, `done — no clothes found in this ${mediaType}`));
       commit(jobId, ctx, {
         status: 'done',
         outfit_summary: perceived?.outfit_summary || '',
