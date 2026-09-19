@@ -1,5 +1,5 @@
 {
-  "name": "mobile",
+  "name": "frontend",
   "version": "1.0.0",
   "main": "expo-router/entry",
   "dependencies": {
@@ -9,19 +9,22 @@
     "expo-router": "~57.0.22",
     "expo-status-bar": "~57.0.1",
     "react": "19.2.3",
+    "react-dom": "19.2.3",
     "react-native": "0.86.3",
     "react-native-safe-area-context": "~5.7.0",
-    "react-native-screens": "~4.26.0"
+    "react-native-screens": "~4.26.0",
+    "react-native-web": "^0.21.2"
   },
   "devDependencies": {
     "@types/react": "~19.2.2",
     "typescript": "~6.0.3"
   },
   "scripts": {
-    "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
-    "web": "expo start --web"
+    "dev": "expo start --web --port 3000",
+    "start": "expo start --port 3000",
+    "android": "expo start --android --port 3000",
+    "ios": "expo start --ios --port 3000",
+    "web": "expo start --web --port 3000"
   },
   "private": true
 }
