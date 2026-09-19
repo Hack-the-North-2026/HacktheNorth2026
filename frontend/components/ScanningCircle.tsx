@@ -1,8 +1,8 @@
-import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, Image, StyleSheet, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Image, Platform, StyleSheet, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
-const AnimatedCircle = Animated.createAnimatedComponent(Circle);
+const useNativeDriver = Platform.OS !== 'web';
 
 interface ScanningCircleProps {
   uri: string;
@@ -23,12 +23,17 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
   const strokeWidth = 4;
   const radius = size / 2 - strokeWidth;
   const circumference = 2 * Math.PI * radius;
+  const [dashOffset, setDashOffset] = useState(circumference);
 
   useEffect(() => {
+    const listenerId = progress.addListener(({ value }) => {
+      setDashOffset(circumference * (1 - value));
+    });
+
     const breatheLoop = Animated.loop(
       Animated.sequence([
-        Animated.timing(breathe, { toValue: 1, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(breathe, { toValue: 0, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(breathe, { toValue: 1, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver }),
+        Animated.timing(breathe, { toValue: 0, duration: 1800, easing: Easing.inOut(Easing.ease), useNativeDriver }),
       ])
     );
     breatheLoop.start();
@@ -41,14 +46,13 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
       useNativeDriver: false,
     }).start();
 
-    return () => breatheLoop.stop();
-  }, [breathe, progress, durationMs]);
+    return () => {
+      breatheLoop.stop();
+      progress.removeListener(listenerId);
+    };
+  }, [breathe, progress, durationMs, circumference]);
 
   const scale = breathe.interpolate({ inputRange: [0, 1], outputRange: [1, 1.045] });
-  const strokeDashoffset = progress.interpolate({
-    inputRange: [0, 1],
-    outputRange: [circumference, 0],
-  });
 
   return (
     <Animated.View style={{ width: size, height: size, transform: [{ scale }] }}>
@@ -64,7 +68,7 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
           strokeWidth={strokeWidth}
           fill="none"
         />
-        <AnimatedCircle
+        <Circle
           cx={size / 2}
           cy={size / 2}
           r={radius}
@@ -72,10 +76,9 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
           strokeWidth={strokeWidth}
           strokeLinecap="round"
           fill="none"
-          strokeDasharray={`${circumference}, ${circumference}`}
-          strokeDashoffset={strokeDashoffset}
-          rotation="-90"
-          origin={`${size / 2}, ${size / 2}`}
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={dashOffset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
       </Svg>
     </Animated.View>
