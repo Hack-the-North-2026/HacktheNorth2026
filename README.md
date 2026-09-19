@@ -1,8 +1,8 @@
 # Fit Stealer
 
-Fit Stealer is a full-stack AI app designed to extract fashion outfits directly from TikTok videos, match clothing items via Vision-Language Models (VLM) & reverse search agents, and provide direct e-commerce purchase links.
+Fit Stealer identifies what is on screen — starting with clothes from a screenshot.
 
-The long-term vision is **Shazam for anything on your screen**, starting with clothing. See [OVERVIEW.md](./OVERVIEW.md) for product goals, MVP scope, and the app-first then device-native plan.
+The long-term vision is **Shazam for anything on your screen**. Build order is screenshot-in-app (Stage 1), Android device-native frame capture (Stage 2), short video (Stage 3), then any category / accessibility (Stage 4). See [OVERVIEW.md](./OVERVIEW.md) for product stages and [ARCHITECTURE.md](./ARCHITECTURE.md) for how we execute them.
 
 ---
 
@@ -14,7 +14,7 @@ FitStealer/
 │   ├── app/                       # Expo Router file-based routes
 │   ├── components/                # Reusable UI components
 │   ├── lib/                       # API clients (calls backend on port 4000)
-│   └── targets/share-extension/   # Native iOS & Android share targets
+│   └── targets/share-extension/   # Stage 2 iOS fallback (share / last screenshot)
 │
 ├── backend/                       # Node.js Express API — port 4000
 │   └── src/index.js               # HTTP API that proxies to the AI service
@@ -23,10 +23,10 @@ FitStealer/
 │   ├── main.py                    # FastAPI server & route handlers
 │   ├── requirements.txt           # Python dependencies
 │   └── services/                  # Business logic & AI agent integrations
-│       ├── video_processor.py     # Download & frame extraction
-│       ├── baseten_vlm.py         # Vision-Language Model tagging
-│       ├── browserbase_scraper.py # Headless browser search agents
-│       └── shopify_filter.py      # E-commerce link filtering
+│       ├── baseten_vlm.py         # Stage 1: vision tagging on a still
+│       ├── shopify_filter.py      # Stage 1: Shopify catalog search (replace stub)
+│       ├── browserbase_scraper.py # Stage 3+: open-web source agent
+│       └── video_processor.py     # Stage 3: video → keyframes
 │
 ├── package.json                   # Root scripts (`npm run dev` starts all services)
 └── .env.example                   # Environment configuration template
@@ -156,12 +156,13 @@ uvicorn main:app --reload --port 8000
 
 ## 📡 API Endpoints
 
-The frontend calls the backend on port **4000**. The backend proxies `/api/process-url` to the AI service on port **8000**.
+The frontend talks to the backend on port **4000**. The backend talks to the AI service on port **8000**. Stage 1 is a screenshot upload, not a TikTok URL.
 
-| Method | Endpoint           | Description                                        |
-| ------ | ------------------ | -------------------------------------------------- |
-| `GET`  | `/health`          | Server health status check                         |
-| `POST` | `/api/process-url` | Processes a TikTok video URL to extract outfit links |
+| Method | Endpoint | Description |
+| ------ | --- | --- |
+| `GET`  | `/health` | Server health status check |
+| `POST` | `/api/identify` | Stage 1: multipart image → clothing items + source links |
+| `POST` | `/api/process-url` | Legacy stub; do not build Stage 1 on this |
 
 ---
 
