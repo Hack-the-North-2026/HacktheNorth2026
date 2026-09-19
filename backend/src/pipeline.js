@@ -13,7 +13,7 @@ import { downscaleUpload } from './downscale.js';
 import { createJob, updateJob } from './jobs.js';
 import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
 import { Sentry } from './sentry.js';
-import { jobMsg, logger } from './logger.js';
+import { agentLog, jobMsg, logger } from './logger.js';
 import { perceive, resolveSourceMode, sourceAndRank } from './tools.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -141,6 +141,7 @@ export function startIdentifyJob({ origin = 'app', file, deviceId } = {}) {
   void runPipeline(job.job_id, file, ctx, jobOrigin)
     .catch((error) => {
       logger.error(jobMsg(job.job_id, 'pipeline failed'), error);
+      Sentry.captureException(error);
       commit(job.job_id, ctx, {
         status: 'error',
         error: isTimeoutError(error)
@@ -165,6 +166,17 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
     async () => {
   try {
     logger.info(jobMsg(jobId, `started — identifying photo (from ${origin})`));
+    Sentry.logger.info('identify.started', { job_id: jobId, origin });
+    // #region agent log
+    agentLog('F', 'pipeline.js:start', 'job started', {
+      jobId,
+      origin,
+      mocks: [...mocks],
+      mime: file?.mimetype || null,
+      bytes: file?.size || file?.buffer?.length || 0,
+      filename: file?.originalname || null,
+    });
+    // #endregion
     commit(jobId, ctx, { status: 'ingesting' });
     logger.info(jobMsg(jobId, 'ingest — preparing photo'));
     await downscaleUpload(file, jobId);
@@ -197,6 +209,19 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
 
     if (garments.length === 0) {
       logger.info(jobMsg(jobId, 'done — no clothes found in this photo'));
+      Sentry.logger.info('identify.done', {
+        job_id: jobId,
+        origin,
+        garment_count: 0,
+        shopify_hits: 0,
+      });
+      // #region agent log
+      agentLog('A', 'pipeline.js:empty', 'no garments after confidence filter', {
+        jobId,
+        outfit_summary: perceived?.outfit_summary || '',
+        rawCount: (perceived?.garments || []).length,
+      });
+      // #endregion
       commit(jobId, ctx, {
         status: 'done',
         outfit_summary: perceived?.outfit_summary || '',
@@ -207,6 +232,27 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
 
     const names = garments.map((garment) => garment.category).join(', ');
     logger.info(jobMsg(jobId, `see — ${garments.length} clothes: ${names}`));
+    // #region agent log
+    agentLog('A', 'pipeline.js:see', 'garments after see+crop+confidence filter', {
+      jobId,
+      outfit_summary: perceived?.outfit_summary || '',
+      rawCount: (perceived?.garments || []).length,
+      keptCount: garments.length,
+      garments: garments.map((g) => ({
+        id: g.id,
+        category: g.category,
+        description: g.description,
+        search_query: g.search_query,
+        brand: g.brand,
+        brand_cues: g.brand_cues,
+        confidence: g.confidence,
+        bbox: g.bbox,
+        hasChip: Boolean(g.chip_key && g.chip_key.includes('/')),
+        accessibility_line: g.accessibility_line,
+        attributes: g.attributes,
+      })),
+    });
+    // #endregion
     temps.push(...collectTempPaths({ garments }));
 
     commit(jobId, ctx, {
@@ -233,6 +279,9 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
           const matches = await sourceAndRank(garment, jobId);
           if (matches == null) {
             logger.warn(jobMsg(jobId, `source — ${garment.category}: no live results, using mock matches`));
+            // #region agent log
+            agentLog('D', 'pipeline.js:mockFallback', 'used mock matches', { jobId, category: garment.category });
+            // #endregion
             return { garment, matches: mockMatchesFor(garment) };
           }
           return { garment, matches: normalizeMatches(matches) };
@@ -253,6 +302,38 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
     const matchCount = ranked.reduce((count, item) => count + item.matches.length, 0);
     logger.info(jobMsg(jobId, `rank — finished for all garments`));
     logger.info(jobMsg(jobId, `done — ${ranked.length} clothes, ${matchCount} shop matches`));
+    Sentry.logger.info('identify.done', {
+      job_id: jobId,
+      origin,
+      garment_count: ranked.length,
+      shopify_hits: matchCount,
+    });
+    // #region agent log
+    agentLog('D', 'pipeline.js:done', 'identify result', {
+      jobId,
+      sourceMode,
+      clothes: ranked.length,
+      matchCount,
+      items: ranked.map((item) => ({
+        category: item.garment?.category,
+        search_query: item.garment?.search_query,
+        usedMock: sourceMode === 'mock',
+        matchCount: (item.matches || []).length,
+        matches: (item.matches || []).map((m) => ({
+          title: m.title,
+          match_type: m.match_type,
+          source: m.source,
+          store_name: m.store_name,
+          price: m.price,
+          currency: m.currency,
+          hasUrl: Boolean(m.url),
+          hasImage: Boolean(m.image_url),
+          reason: m.reason,
+          confidence: m.confidence,
+        })),
+      })),
+    });
+    // #endregion
     commit(jobId, ctx, {
       status: 'done',
       items: scrubChipKeys(ranked),

@@ -23,6 +23,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from logging_config import agent_log
+
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 load_dotenv()
 
@@ -225,6 +227,33 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
         )
     else:
         logger.info("see — Baseten found %s clothes: %s", len(kept), names)
+
+    # #region agent log
+    agent_log(
+        "A",
+        "baseten_vlm.py:analyze",
+        "vlm garments",
+        {
+            "dropped": dropped,
+            "kept": len(kept),
+            "outfit_summary": result.get("outfit_summary", ""),
+            "garments": [
+                {
+                    "id": g.get("id"),
+                    "category": g.get("category"),
+                    "description": g.get("description"),
+                    "search_query": g.get("search_query"),
+                    "brand": g.get("brand"),
+                    "brand_cues": g.get("brand_cues"),
+                    "confidence": g.get("confidence"),
+                    "bbox": g.get("bbox"),
+                    "attributes": g.get("attributes"),
+                }
+                for g in kept
+            ],
+        },
+    )
+    # #endregion
 
     return result
 

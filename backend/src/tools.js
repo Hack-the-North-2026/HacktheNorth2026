@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { jobMsg, logger } from './logger.js';
+import { agentLog, jobMsg, logger } from './logger.js';
 
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 45_000);
@@ -174,6 +174,17 @@ export async function sourceAndRank(garment, jobId) {
   const mode = await resolveSourceMode(false);
   const chip = chipPayload(garment);
   const label = garment?.category || garment?.id || 'item';
+
+  // #region agent log
+  agentLog('C', 'tools.js:sourceAndRank', 'chip payload', {
+    jobId,
+    category: label,
+    mode,
+    hasChip: Boolean(chip?.data),
+    chipBytes: chip?.data ? Math.floor((chip.data.length * 3) / 4) : 0,
+    chip_key: garment?.chip_key ? String(garment.chip_key).slice(-80) : '',
+  });
+  // #endregion
 
   if (mode === 'source-rank') {
     logger.info(jobMsg(jobId, `source — ${label}: calling Shopify + OpenAI rank`));

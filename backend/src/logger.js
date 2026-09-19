@@ -41,3 +41,21 @@ export const logger = {
   warn: (message) => write('warn', message),
   error: (message, error) => write('error', message, error),
 };
+
+export function agentLog(hypothesisId, location, message, data = {}) {
+  // #region agent log
+  fetch('http://127.0.0.1:7692/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b95844' },
+    body: JSON.stringify({
+      sessionId: 'b95844',
+      runId: 'stage1-audit',
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}

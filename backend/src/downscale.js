@@ -1,4 +1,4 @@
-import { bytesLabel, jobMsg, logger } from './logger.js';
+import { agentLog, bytesLabel, jobMsg, logger } from './logger.js';
 
 const MAX_EDGE = 1280;
 
@@ -45,6 +45,16 @@ export async function downscaleUpload(file, jobId) {
         jobMsg(jobId, `ingest — photo is ${width}x${height}, converted to JPEG (${bytesLabel(buffer.length)})`),
       );
     }
+    // #region agent log
+    agentLog('F', 'downscale.js', 'ingest complete', {
+      jobId,
+      from: [width, height],
+      to: [outW, outH],
+      longest,
+      resized: longest > MAX_EDGE,
+      jpegBytes: buffer.length,
+    });
+    // #endregion
   } catch (error) {
     logger.warn(jobMsg(jobId, 'ingest — could not downscale, using original photo'));
     logger.warn(error instanceof Error ? error.message : String(error));

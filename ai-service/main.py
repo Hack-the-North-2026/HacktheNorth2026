@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from logging_config import bind_job, configure_logging, garment_name, job_id_var
+from logging_config import agent_log, bind_job, configure_logging, garment_name, job_id_var
 
 configure_logging()
 logger = logging.getLogger("fit_stealer.api")
@@ -41,14 +41,26 @@ from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
 from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
 from services.source_and_rank import source_and_rank  # noqa: E402
 
-_sentry_dsn = os.getenv("SENTRY_DSN")
+_sentry_dsn = os.getenv("SENTRY_DSN") or ""
 if _sentry_dsn:
     try:
         import sentry_sdk
 
-        sentry_sdk.init(dsn=_sentry_dsn, traces_sample_rate=1.0, send_default_pii=False)
+        sentry_kwargs = {
+            "dsn": _sentry_dsn,
+            "traces_sample_rate": 1.0,
+            "send_default_pii": False,
+            "environment": os.getenv("NODE_ENV", "development"),
+        }
+        try:
+            sentry_sdk.init(**sentry_kwargs, enable_logs=True)
+        except TypeError:
+            sentry_sdk.init(**sentry_kwargs)
+        logger.info("Sentry tracing enabled")
     except Exception:
-        pass
+        logger.warning("Sentry SDK not available — pip install sentry-sdk")
+else:
+    logger.info("Sentry DSN not set — AI service tracing is off")
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -155,6 +167,7 @@ def health_check():
         "status": "ok",
         "service": "Fit Stealer AI Service",
         "version": "0.2.0",
+        "sentry": "ok" if _sentry_dsn else "unconfigured",
         "endpoints": [
             "/tools/see",
             "/tools/crop",

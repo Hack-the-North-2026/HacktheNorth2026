@@ -8,7 +8,7 @@ import { FitCard } from '../../components/FitCard';
 import { IdentifyStatusView } from '../../components/IdentifyStatus';
 import { getIdentifyJob } from '../../lib/api';
 import { getJobPreview } from '../../lib/resultStore';
-import { withIdentifySpan } from '../../lib/sentry';
+import { Sentry, withIdentifySpan } from '../../lib/sentry';
 import { IdentifyResult } from '../../lib/types';
 import { ACCENT_GRADIENT } from '../../lib/theme';
 
@@ -82,9 +82,20 @@ export default function JobScreen() {
               if (job.status === 'done') {
                 const matches = job.items.reduce((n, item) => n + item.matches.length, 0);
                 console.log(`return — Job ${short} showing ${job.items.length} clothes, ${matches} shop matches`);
+                Sentry.logger.info('identify.return', {
+                  job_id: jobId,
+                  origin: job.origin || 'app',
+                  garment_count: job.items.length,
+                  shopify_hits: matches,
+                });
               }
               if (job.status === 'error') {
                 console.log(`return — Job ${short} failed: ${job.error || 'unknown error'}`);
+                Sentry.logger.warn('identify.error', {
+                  job_id: jobId,
+                  origin: job.origin || 'app',
+                  error: job.error || 'unknown error',
+                });
               }
             }
             setResult(job);
@@ -99,6 +110,7 @@ export default function JobScreen() {
         });
       } catch (err: unknown) {
         if (!cancelled) {
+          Sentry.captureException(err);
           setError(err instanceof Error ? err.message : 'Could not load this identify job.');
         }
       }

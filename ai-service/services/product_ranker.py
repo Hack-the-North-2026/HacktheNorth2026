@@ -8,7 +8,7 @@ import os
 import re
 from typing import TYPE_CHECKING, Any
 
-from logging_config import garment_name
+from logging_config import agent_log, garment_name
 
 if TYPE_CHECKING:
     from openai import OpenAI
@@ -173,4 +173,30 @@ def rank_candidates(
     exact = sum(1 for match in output if match.get("match_type") == "exact")
     similar = sum(1 for match in output if match.get("match_type") == "similar")
     logger.info("rank — %s: kept %s exact, %s similar", name, exact, similar)
+    # #region agent log
+    agent_log(
+        "E",
+        "product_ranker.py:rank",
+        "ranked matches",
+        {
+            "category": name,
+            "candidateCount": len(candidates),
+            "kept": len(output),
+            "exact": exact,
+            "similar": similar,
+            "garmentBrand": garment.get("brand"),
+            "garmentQuery": str(garment.get("search_query") or "")[:120],
+            "matches": [
+                {
+                    "title": m.get("title"),
+                    "match_type": m.get("match_type"),
+                    "confidence": m.get("confidence"),
+                    "reason": m.get("reason"),
+                    "store_name": m.get("store_name"),
+                }
+                for m in output
+            ],
+        },
+    )
+    # #endregion
     return output

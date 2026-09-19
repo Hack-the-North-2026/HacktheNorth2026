@@ -17,6 +17,8 @@ import logging
 
 from PIL import Image
 
+from logging_config import agent_log
+
 logger = logging.getLogger("fit_stealer.crop")
 
 MAX_EDGE = 1280
@@ -87,6 +89,7 @@ def crop_garments(
     updated = []
     saved = 0
     skipped = 0
+    chip_stats = []
     for garment in garments:
         g = dict(garment)  # shallow copy — don't mutate caller's dict
 
@@ -94,6 +97,15 @@ def crop_garments(
         if not bbox or len(bbox) != 4:
             g["chip_key"] = g.get("chip_key", "")
             skipped += 1
+            chip_stats.append(
+                {
+                    "id": g.get("id"),
+                    "category": g.get("category"),
+                    "skipped": True,
+                    "reason": "missing_bbox",
+                    "bbox": bbox,
+                }
+            )
             updated.append(g)
             continue
 
@@ -123,6 +135,16 @@ def crop_garments(
             # Too small — VLM bbox was unreliable; skip this chip
             g["chip_key"] = g.get("chip_key", "")
             skipped += 1
+            chip_stats.append(
+                {
+                    "id": g.get("id"),
+                    "category": g.get("category"),
+                    "skipped": True,
+                    "reason": "too_small",
+                    "bbox": bbox,
+                    "px": [chip_w, chip_h],
+                }
+            )
             updated.append(g)
             continue
 
@@ -133,12 +155,32 @@ def crop_garments(
 
         g["chip_key"] = str(chip_path)
         saved += 1
+        chip_stats.append(
+            {
+                "id": g.get("id"),
+                "category": g.get("category"),
+                "skipped": False,
+                "bbox": bbox,
+                "px": [chip_w, chip_h],
+                "image": [img_w, img_h],
+                "coverage": round((chip_w * chip_h) / max(1, img_w * img_h), 3),
+            }
+        )
         updated.append(g)
 
     if skipped:
         logger.info("crop — saved %s chips, skipped %s (bbox missing or too small)", saved, skipped)
     else:
         logger.info("crop — saved %s chips", saved)
+
+    # #region agent log
+    agent_log(
+        "B",
+        "cropper.py:crop_garments",
+        "chip crop results",
+        {"image": [img_w, img_h], "saved": saved, "skipped": skipped, "chips": chip_stats},
+    )
+    # #endregion
 
     return updated
 

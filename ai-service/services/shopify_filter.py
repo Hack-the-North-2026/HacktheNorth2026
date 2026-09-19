@@ -16,7 +16,7 @@ from typing import Any
 
 import requests
 
-from logging_config import garment_name
+from logging_config import agent_log, garment_name
 
 
 logger = logging.getLogger("fit_stealer.shopify")
@@ -257,6 +257,25 @@ def search_shopify_catalog(
     candidates = [normalize_product(product) for product in products]
     kept = [candidate for candidate in candidates if candidate is not None][:limit]
     logger.info("shopify — %s: %s products", name, len(kept))
+    # #region agent log
+    agent_log(
+        "C",
+        "shopify_filter.py:search",
+        "shopify catalog results",
+        {
+            "category": name,
+            "query": query[:120],
+            "hasChip": bool(chip_base64),
+            "rawProducts": len(products),
+            "normalized": len(kept),
+            "droppedNormalize": len(products) - len(kept),
+            "titles": [c.get("title") for c in kept],
+            "prices": [c.get("price") for c in kept],
+            "hasUrl": [bool(c.get("url")) for c in kept],
+            "hasImage": [bool(c.get("image_url")) for c in kept],
+        },
+    )
+    # #endregion
     return kept
 
 

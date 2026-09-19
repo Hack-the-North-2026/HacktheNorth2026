@@ -52,6 +52,32 @@ class HumanFormatter(logging.Formatter):
         return line
 
 
+def agent_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None) -> None:
+    # #region agent log
+    try:
+        import json
+        import time
+
+        with open("/Users/mehrabzk/HTN2026/.cursor/debug-b95844.log", "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "sessionId": "b95844",
+                        "runId": "stage1-audit",
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data or {},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
+
+
 def configure_logging() -> None:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)

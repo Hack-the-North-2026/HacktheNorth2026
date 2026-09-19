@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
 dotenv.config();
 
-await import('./sentry.js');
+const { Sentry, sentryEnabled } = await import('./sentry.js');
 const { connectMongo, mongoStatus } = await import('./db.js');
 const { getJob } = await import('./jobs.js');
 const { isImageUpload, startIdentifyJob } = await import('./pipeline.js');
@@ -91,6 +91,7 @@ app.get('/health', async (_req, res) => {
     service: 'Fit Stealer Backend',
     aiService,
     mongo: mongoStatus(),
+    sentry: sentryEnabled() ? 'ok' : 'unconfigured',
     expoHint: lan ? `http://${lan}:${PORT}` : `http://localhost:${PORT}`,
   });
 });
@@ -205,6 +206,8 @@ app.post('/api/process-url', async (req, res) => {
   }
 });
 
+Sentry.setupExpressErrorHandler(app);
+
 app.use((error, req, res, _next) => {
   logger.error(`Unhandled error on ${req.method} ${req.path}`, error);
   if (!res.headersSent) res.status(500).json({ error: 'Internal server error.' });
@@ -223,6 +226,11 @@ process.on('uncaughtException', (error) => {
 app.listen(PORT, '0.0.0.0', () => {
   void connectMongo();
   logger.info(`Backend ready at http://localhost:${PORT}`);
+  if (sentryEnabled()) {
+    logger.info('Sentry tracing and logs enabled');
+  } else {
+    logger.warn('Sentry DSN not set — add SENTRY_DSN to .env to turn on tracing');
+  }
   if (isDevUploadEnabled()) {
     logger.info(`Dev upload page: http://localhost:${PORT}/dev/upload`);
   }
