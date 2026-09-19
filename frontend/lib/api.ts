@@ -1,104 +1,95 @@
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { IdentifyResult } from './types';
 
-// Frontend talks to the Node backend (port 4000), which proxies to the AI service.
-const getBackendUrl = () => {
+function hostFromExpo(): string | null {
+  const hostUri =
+    Constants.expoConfig?.hostUri ||
+    Constants.linkingUri ||
+    '';
+  const host = hostUri
+    .replace(/^[a-z]+:\/\//i, '')
+    .split('/')[0]
+    .split(':')[0];
+  if (host && host !== 'localhost' && host !== '127.0.0.1') {
+    return host;
+  }
+  return null;
+}
+
+export function getApiBaseUrl(): string {
+  const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '');
+  if (fromEnv) return fromEnv;
+
+  const lanHost = hostFromExpo();
+  if (lanHost) return `http://${lanHost}:4000`;
+
   if (Platform.OS === 'android') {
     return 'http://10.0.2.2:4000';
   }
   return 'http://localhost:4000';
-};
-
-export const API_BASE_URL = getBackendUrl();
-
-function mockIdentifyResult(uri: string): IdentifyResult {
-  return {
-    job_id: `mock-${Date.now()}`,
-    status: 'done',
-    origin: 'app',
-    thumbnail_url: uri,
-    outfit_summary: 'Oversized black leather biker jacket over a white tee, with light-wash denim.',
-    items: [
-      {
-        garment: {
-          id: 'garment-1',
-          category: 'jacket',
-          description: 'Oversized black leather biker jacket',
-          search_query: 'oversized black leather biker jacket',
-          attributes: { color: 'black', material: 'leather', fit: 'oversized' },
-          brand: null,
-          brand_cues: [],
-          confidence: 0.91,
-          bbox: [120, 80, 420, 460],
-          chip_key: 'chip-1',
-          accessibility_line: 'A black leather biker jacket with silver zip details.',
-        },
-        matches: [
-          {
-            title: 'Oversized Leather Biker Jacket',
-            url: 'https://www.shopify.com/example/biker-jacket',
-            image_url: 'https://picsum.photos/seed/biker-jacket/400/500',
-            price: '189.00',
-            currency: 'CAD',
-            store_name: 'Nova Studios',
-            source: 'shopify',
-            match_type: 'exact',
-            confidence: 0.88,
-            reason: 'Same silhouette, material, and zip placement as the reference photo.',
-          },
-          {
-            title: 'Faux Leather Moto Jacket',
-            url: 'https://www.shopify.com/example/moto-jacket',
-            image_url: 'https://picsum.photos/seed/moto-jacket/400/500',
-            price: '96.00',
-            currency: 'CAD',
-            store_name: 'Rareform',
-            source: 'shopify',
-            match_type: 'similar',
-            confidence: 0.71,
-            reason: 'Same color and silhouette, different collar shape.',
-          },
-        ],
-      },
-      {
-        garment: {
-          id: 'garment-2',
-          category: 'pants',
-          description: 'Light-wash straight-leg denim jeans',
-          search_query: 'light wash straight leg denim jeans',
-          attributes: { color: 'light blue', material: 'denim', fit: 'straight' },
-          brand: null,
-          brand_cues: [],
-          confidence: 0.85,
-          bbox: [140, 460, 380, 780],
-          chip_key: 'chip-2',
-          accessibility_line: 'Light-wash straight-leg denim jeans.',
-        },
-        matches: [
-          {
-            title: 'Straight Leg Jean — Light Wash',
-            url: 'https://www.shopify.com/example/straight-jean',
-            image_url: 'https://picsum.photos/seed/denim-jean/400/500',
-            price: '78.00',
-            currency: 'CAD',
-            store_name: 'Field Denim Co.',
-            source: 'shopify',
-            match_type: 'similar',
-            confidence: 0.74,
-            reason: 'Same wash and leg shape; slightly higher rise.',
-          },
-        ],
-      },
-    ],
-  };
 }
 
-export async function identifyImage(uri: string): Promise<IdentifyResult> {
-  await new Promise((resolve) => setTimeout(resolve, 600));
-  return mockIdentifyResult(uri);
+export const API_BASE_URL = getApiBaseUrl();
+
+function guessFilename(uri: string): string {
+  const raw = uri.split('?')[0].split('/').pop() || 'screenshot.jpg';
+  return raw.includes('.') ? raw : `${raw}.jpg`;
+}
+
+function guessMime(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  if (ext === 'png') return 'image/png';
+  if (ext === 'webp') return 'image/webp';
+  if (ext === 'heic' || ext === 'heif') return 'image/heic';
+  return 'image/jpeg';
+}
+
+async function buildIdentifyForm(uri: string): Promise<FormData> {
+  const form = new FormData();
+  const filename = guessFilename(uri);
+  const type = guessMime(filename);
+
+  if (Platform.OS === 'web') {
+    const blob = await (await fetch(uri)).blob();
+    form.append('image', blob, filename);
+  } else {
+    form.append('image', { uri, name: filename, type } as unknown as Blob);
+  }
+  form.append('type', 'image');
+  form.append('origin', 'app');
+  return form;
+}
+
+async function readJson<T>(response: Response): Promise<T> {
+  const data = (await response.json().catch(() => ({}))) as {
+    error?: string;
+    detail?: string;
+  } & T;
+  if (!response.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : data.error;
+    throw new Error(detail || `Request failed (${response.status})`);
+  }
+  return data;
+}
+
+export async function startIdentifyJob(uri: string): Promise<IdentifyResult> {
+  const response = await fetch(`${getApiBaseUrl()}/api/identify`, {
+    method: 'POST',
+    body: await buildIdentifyForm(uri),
+    headers: { Accept: 'application/json' },
+  });
+  return readJson<IdentifyResult>(response);
+}
+
+export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
+  const response = await fetch(`${getApiBaseUrl()}/jobs/${encodeURIComponent(jobId)}`, {
+    headers: { Accept: 'application/json' },
+  });
+  return readJson<IdentifyResult>(response);
 }
 
 export async function checkBackendHealth() {
-  const response = await fetch(`${API_BASE_URL}/health`);
-  return await response.json();
+  const response = await fetch(`${getApiBaseUrl()}/health`);
+  return readJson(response);
 }

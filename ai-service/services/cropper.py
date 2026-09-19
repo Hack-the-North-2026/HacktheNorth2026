@@ -12,10 +12,33 @@ Architecture contract (§7.2):
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from PIL import Image
+
+MAX_EDGE = 1280
+
+
+def prepare_image_for_see(src_path: str, dest_path: str, max_edge: int = MAX_EDGE) -> str:
+    """Downscale so the longest edge is ~1280px and save a JPEG for See + Crop.
+
+    Bounding boxes from the VLM are relative to this prepared image, so Crop
+    must receive the same path. Dev 2 may also downscale; doing it here keeps
+    coordinates correct even if the orchestrator forwards a 4K original.
+    """
+    img = Image.open(src_path).convert("RGB")
+    width, height = img.size
+    longest = max(width, height)
+    if longest > max_edge:
+        scale = max_edge / longest
+        img = img.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+    out = Path(dest_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.save(out, "JPEG", quality=85)
+    return str(out.resolve())
 
 
 def crop_garments(
@@ -61,19 +84,24 @@ def crop_garments(
             updated.append(g)
             continue
 
-        x_min_n, y_min_n, x_max_n, y_max_n = bbox
+        x_min_n, y_min_n, x_max_n, y_max_n = (float(v) for v in bbox)
+        looks_normalized = max(abs(x_min_n), abs(y_min_n), abs(x_max_n), abs(y_max_n)) <= 1.5
 
-        # Clamp to [0, 1] in case of minor VLM overshoot
-        x_min_n = max(0.0, min(1.0, x_min_n))
-        y_min_n = max(0.0, min(1.0, y_min_n))
-        x_max_n = max(0.0, min(1.0, x_max_n))
-        y_max_n = max(0.0, min(1.0, y_max_n))
+        if looks_normalized:
+            x_min = int(max(0.0, min(1.0, x_min_n)) * img_w)
+            y_min = int(max(0.0, min(1.0, y_min_n)) * img_h)
+            x_max = int(max(0.0, min(1.0, x_max_n)) * img_w)
+            y_max = int(max(0.0, min(1.0, y_max_n)) * img_h)
+        else:
+            x_min = int(max(0, min(img_w, x_min_n)))
+            y_min = int(max(0, min(img_h, y_min_n)))
+            x_max = int(max(0, min(img_w, x_max_n)))
+            y_max = int(max(0, min(img_h, y_max_n)))
 
-        # Denormalize
-        x_min = int(x_min_n * img_w)
-        y_min = int(y_min_n * img_h)
-        x_max = int(x_max_n * img_w)
-        y_max = int(y_max_n * img_h)
+        if x_max < x_min:
+            x_min, x_max = x_max, x_min
+        if y_max < y_min:
+            y_min, y_max = y_max, y_min
 
         chip_w = x_max - x_min
         chip_h = y_max - y_min

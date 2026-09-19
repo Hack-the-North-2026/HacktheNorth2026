@@ -4,12 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --watch src/index.js",
-    "start": "node src/index.js"
+    "dev": "node --watch-path=src --watch-path=public src/index.js",
+    "start": "node src/index.js",
+    "smoke": "bash scripts/smoke-identify.sh"
   },
-  "dependencies": {
+    "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
-    "express": "^4.21.2"
+    "express": "^4.21.2",
+    "multer": "^2.4.0",
+    "@sentry/node": "^10.19.0",
+    "sharp": "^0.34.4"
   }
 }
