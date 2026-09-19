@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, Image, Platform, StyleSheet, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
+import { ACCENT, EASE_OUT_EXPO } from '../lib/theme';
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -15,7 +16,7 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
   uri,
   size = 176,
   durationMs,
-  color = '#7C7CFF',
+  color = ACCENT,
 }) => {
   const breathe = useRef(new Animated.Value(0)).current;
   const progress = useRef(new Animated.Value(0)).current;
@@ -42,7 +43,7 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
     Animated.timing(progress, {
       toValue: 1,
       duration: durationMs,
-      easing: Easing.linear,
+      easing: Easing.bezier(...EASE_OUT_EXPO),
       useNativeDriver: false,
     }).start();
 

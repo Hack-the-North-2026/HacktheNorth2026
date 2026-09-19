@@ -31,7 +31,7 @@ if (isDev) {
   args.push('--reload');
 }
 
-const child = spawn(pythonExecutable, args, { stdio: 'inherit', shell: true });
+const child = spawn(pythonExecutable, args, { stdio: 'inherit', cwd: __dirname });
 
 child.on('exit', (code) => {
   process.exit(code || 0);
