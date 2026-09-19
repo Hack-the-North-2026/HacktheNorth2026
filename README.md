@@ -56,7 +56,8 @@ Set your API keys and ports:
 
 - `BASETEN_API_KEY`: Baseten platform key for VLM inference
 - `BROWSERBASE_API_KEY`: Browserbase key for headless web scraping
-- `SHOPIFY_API_KEY`: Shopify Storefront / Commerce API key
+- `OPENAI_API_KEY`: OpenAI key used by the exact-versus-similar ranker
+- `SHOPIFY_AGENT_PROFILE_URL`: public UCP profile used for Shopify Global Catalog search (no Shopify API key is required)
 - `BACKEND_PORT`: `4000` (default)
 - `AI_SERVICE_PORT`: `8000` (default)
 - `AI_SERVICE_URL`: `http://localhost:8000` (used by the backend to reach the AI service)
