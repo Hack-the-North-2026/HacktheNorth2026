@@ -1,60 +1,79 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
-import { processTikTokUrl } from '../lib/api';
+import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Alert, Image } from 'react-native';
+import { useRouter } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
+import { identifyImage } from '../lib/api';
+import { setLastResult } from '../lib/resultStore';
 
 export default function HomeScreen() {
-  const [url, setUrl] = useState('');
+  const router = useRouter();
+  const [uri, setUri] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<any>(null);
 
-  const handleProcess = async () => {
-    if (!url.trim()) {
-      Alert.alert('Error', 'Please enter a valid TikTok URL');
-      return;
-    }
-
+  const runIdentify = async (imageUri: string) => {
+    setUri(imageUri);
     setLoading(true);
-    setResult(null);
     try {
-      const data = await processTikTokUrl(url.trim());
-      setResult(data);
+      const result = await identifyImage(imageUri);
+      setLastResult(result);
+      router.push('/results');
     } catch (error: any) {
-      Alert.alert('Processing Failed', error.message || 'Could not connect to backend server');
+      Alert.alert('Identify Failed', error.message || 'Could not process that screenshot.');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const pickFromLibrary = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Allow photo library access to upload a screenshot.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.9,
+    });
+    if (!result.canceled && result.assets[0]) {
+      runIdentify(result.assets[0].uri);
+    }
+  };
+
+  const takePhoto = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Allow camera access to capture a screenshot.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.9,
+    });
+    if (!result.canceled && result.assets[0]) {
+      runIdentify(result.assets[0].uri);
     }
   };
 
   return (
     <View style={styles.container}>
       <Text style={styles.title}>Fit Stealer</Text>
-      <Text style={styles.subtitle}>Steal outfit links directly from TikTok videos</Text>
+      <Text style={styles.subtitle}>Upload a screenshot of an outfit to find it</Text>
 
-      <View style={styles.inputContainer}>
-        <TextInput
-          style={styles.input}
-          placeholder="Paste TikTok URL here..."
-          placeholderTextColor="#888"
-          value={url}
-          onChangeText={setUrl}
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-        <TouchableOpacity style={styles.button} onPress={handleProcess} disabled={loading}>
+      {uri && (
+        <Image source={{ uri }} style={styles.preview} resizeMode="cover" />
+      )}
+
+      <View style={styles.actions}>
+        <TouchableOpacity style={styles.button} onPress={pickFromLibrary} disabled={loading}>
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.buttonText}>Steal Fit</Text>
+            <Text style={styles.buttonText}>Upload Screenshot</Text>
           )}
         </TouchableOpacity>
+        <TouchableOpacity style={styles.secondaryButton} onPress={takePhoto} disabled={loading}>
+          <Text style={styles.secondaryButtonText}>Take Photo</Text>
+        </TouchableOpacity>
       </View>
-
-      {result && (
-        <View style={styles.resultCard}>
-          <Text style={styles.resultTitle}>Processing Result:</Text>
-          <Text style={styles.resultText}>{JSON.stringify(result, null, 2)}</Text>
-        </View>
-      )}
     </View>
   );
 }
@@ -79,18 +98,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: 32,
   },
-  inputContainer: {
-    gap: 12,
-  },
-  input: {
+  preview: {
+    width: '100%',
+    height: 280,
+    borderRadius: 16,
+    marginBottom: 24,
     backgroundColor: '#1C1C22',
-    borderWidth: 1,
-    borderColor: '#2E2E38',
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    color: '#FFFFFF',
-    fontSize: 16,
+  },
+  actions: {
+    gap: 12,
   },
   button: {
     backgroundColor: '#6366F1',
@@ -104,22 +120,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
   },
-  resultCard: {
-    marginTop: 24,
+  secondaryButton: {
     backgroundColor: '#1C1C22',
-    borderRadius: 12,
-    padding: 16,
     borderWidth: 1,
     borderColor: '#2E2E38',
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  resultTitle: {
-    color: '#6366F1',
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  resultText: {
+  secondaryButtonText: {
     color: '#D1D5DB',
-    fontFamily: 'monospace',
-    fontSize: 12,
+    fontSize: 16,
+    fontWeight: '600',
   },
 });
