@@ -1,3 +1,5 @@
+import { logger } from './logger.js';
+
 const MAX_EDGE = 1280;
 
 export async function downscaleUpload(file) {
@@ -29,7 +31,7 @@ export async function downscaleUpload(file) {
       file.originalname = String(file.originalname).replace(/\.[^.]+$/, '.jpg');
     }
   } catch (error) {
-    console.warn('[ingest] downscale skipped:', error.message);
+    logger.warn('ingest.downscale_skipped', { error });
   }
 
   return file;

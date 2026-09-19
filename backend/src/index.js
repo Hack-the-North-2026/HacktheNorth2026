@@ -4,7 +4,9 @@ import express from 'express';
 import multer from 'multer';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { logger } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
@@ -26,6 +28,27 @@ const upload = multer({
 
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  const requestId = req.get('x-request-id') || randomUUID();
+  req.requestId = requestId;
+  res.setHeader('x-request-id', requestId);
+  const started = performance.now();
+  res.on('finish', () => {
+    const context = {
+      request_id: requestId,
+      method: req.method,
+      path: req.path,
+      status: res.statusCode,
+      duration_ms: Math.round(performance.now() - started),
+    };
+    const routinePoll = req.method === 'GET' && req.path.startsWith('/jobs/');
+    if (res.statusCode >= 500) logger.error('http.request', new Error(`HTTP ${res.statusCode}`), context);
+    else if (res.statusCode >= 400) logger.warn('http.request', context);
+    else if (routinePoll) logger.debug('http.request', context);
+    else logger.info('http.request', context);
+  });
+  next();
+});
 
 function lanIPv4() {
   const nets = os.networkInterfaces();
@@ -118,7 +141,8 @@ function handleIdentify(req, res) {
     return res.status(400).json({ error: 'Upload a JPEG or PNG screenshot.' });
   }
 
-  console.log('[identify]', {
+  logger.info('identify.accepted', {
+    request_id: req.requestId,
     origin,
     type,
     filename: req.file.originalname,
@@ -161,13 +185,32 @@ app.post('/api/process-url', async (req, res) => {
   }
 });
 
+app.use((error, req, res, _next) => {
+  logger.error('http.unhandled', error, {
+    request_id: req.requestId,
+    method: req.method,
+    path: req.path,
+  });
+  if (!res.headersSent) res.status(500).json({ error: 'Internal server error.' });
+});
+
+process.on('unhandledRejection', (reason) => {
+  const error = reason instanceof Error ? reason : new Error(String(reason));
+  logger.error('process.unhandled_rejection', error);
+});
+
+process.on('uncaughtException', (error) => {
+  logger.error('process.uncaught_exception', error);
+  process.exitCode = 1;
+});
+
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Backend listening on http://localhost:${PORT}`);
+  logger.info('server.started', { url: `http://localhost:${PORT}` });
   if (isDevUploadEnabled()) {
-    console.log(`Dev upload: http://localhost:${PORT}/dev/upload`);
+    logger.info('server.dev_upload', { url: `http://localhost:${PORT}/dev/upload` });
   }
   const lan = lanIPv4();
   if (lan) {
-    console.log(`Expo Go on a physical phone should use http://${lan}:${PORT}`);
+    logger.info('server.expo_hint', { url: `http://${lan}:${PORT}` });
   }
 });

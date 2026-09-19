@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { logger } from './logger.js';
 
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 45_000);
@@ -100,7 +101,7 @@ export async function perceive(file) {
       try {
         seen.garments = await cropGarments(seen.image_path, seen.garments);
       } catch (cropError) {
-        console.warn('[crop]', cropError.message);
+        logger.warn('crop.failed', { error: cropError });
       }
     }
     return seen;
@@ -156,7 +157,9 @@ export async function resolveSourceMode(forceMock) {
   }
 
   cachedSourceMode = 'mock';
-  console.warn('[source] Dev 4 HTTP tools are not up; using mock matches.');
+  logger.warn('source.mock_fallback', {
+    message: 'Source/Rank HTTP tools are unavailable; using fixture matches.',
+  });
   return cachedSourceMode;
 }
 
