@@ -30,7 +30,16 @@ load_dotenv()
 
 # Import perception services
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
-from services.cropper import crop_garments  # noqa: E402
+from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
+
+_sentry_dsn = os.getenv("SENTRY_DSN")
+if _sentry_dsn:
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(dsn=_sentry_dsn, traces_sample_rate=1.0, send_default_pii=False)
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -72,11 +81,13 @@ class CropResponse(BaseModel):
 class SeeResponse(BaseModel):
     garments: list[dict]
     outfit_summary: str
+    image_path: str
 
 
 class IdentifyResponse(BaseModel):
     garments: list[dict]
     outfit_summary: str
+    image_path: str
 
 
 # ---------------------------------------------------------------------------
@@ -133,15 +144,16 @@ async def tools_see(
       { garments: [...], outfit_summary: "..." }
     """
     if image is not None:
-        # Save uploaded file to a temp path
         suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
         job_id = str(uuid.uuid4())
-        save_path = _UPLOAD_DIR / f"{job_id}{suffix}"
-        content = await image.read()
-        save_path.write_bytes(content)
-        image_path = str(save_path)
+        raw_path = _UPLOAD_DIR / f"{job_id}-raw{suffix}"
+        raw_path.write_bytes(await image.read())
+        image_path = prepare_image_for_see(str(raw_path), str(_UPLOAD_DIR / f"{job_id}.jpg"))
+        try:
+            raw_path.unlink(missing_ok=True)
+        except OSError:
+            pass
     else:
-        # Phase 1 fallback: use TEST_IMAGE_PATH from env
         raw = os.getenv("TEST_IMAGE_PATH", "ai-service/test_outfit.png")
         found = _find_image_file(raw)
         if not found:
@@ -152,7 +164,7 @@ async def tools_see(
                     "Either POST an image file or set TEST_IMAGE_PATH in .env."
                 ),
             )
-        image_path = str(found)
+        image_path = prepare_image_for_see(str(found), str(_UPLOAD_DIR / f"{uuid.uuid4()}.jpg"))
 
     try:
         result = analyze_frames_with_vlm([image_path])
@@ -164,6 +176,7 @@ async def tools_see(
     return SeeResponse(
         garments=result.get("garments", []),
         outfit_summary=result.get("outfit_summary", ""),
+        image_path=image_path,
     )
 
 
@@ -232,12 +245,14 @@ async def api_identify(
     """
     suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
     job_id = str(uuid.uuid4())
-    save_path = _UPLOAD_DIR / f"{job_id}{suffix}"
-    content = await image.read()
-    save_path.write_bytes(content)
-    image_path = str(save_path)
+    raw_path = _UPLOAD_DIR / f"{job_id}-raw{suffix}"
+    raw_path.write_bytes(await image.read())
+    image_path = prepare_image_for_see(str(raw_path), str(_UPLOAD_DIR / f"{job_id}.jpg"))
+    try:
+        raw_path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
-    # See
     try:
         result = analyze_frames_with_vlm([image_path])
     except ValueError as e:
@@ -248,14 +263,16 @@ async def api_identify(
     garments = result.get("garments", [])
     outfit_summary = result.get("outfit_summary", "")
 
-    # Crop
     try:
         garments = crop_garments(image_path, garments, str(_CHIPS_DIR))
     except Exception as e:
-        # Don't fail the whole call if cropping breaks — return garments without chips
         print(f"[warn] Crop failed: {e}")
 
-    return IdentifyResponse(garments=garments, outfit_summary=outfit_summary)
+    return IdentifyResponse(
+        garments=garments,
+        outfit_summary=outfit_summary,
+        image_path=image_path,
+    )
 
 
 # ---------------------------------------------------------------------------

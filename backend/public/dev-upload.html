@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fit Stealer — Dev upload</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #0f0f12;
+        color: #f4f4f5;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 32px 20px 64px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+      }
+      p {
+        color: #a0a0ab;
+        line-height: 1.5;
+      }
+      form {
+        display: grid;
+        gap: 12px;
+        margin: 24px 0;
+        padding: 20px;
+        background: #1c1c22;
+        border: 1px solid #2e2e38;
+        border-radius: 12px;
+      }
+      input[type="file"] {
+        color: #d1d5db;
+      }
+      button {
+        background: #6366f1;
+        color: #fff;
+        border: 0;
+        border-radius: 10px;
+        padding: 12px 16px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      pre {
+        overflow: auto;
+        padding: 16px;
+        background: #1c1c22;
+        border: 1px solid #2e2e38;
+        border-radius: 12px;
+        font-size: 12px;
+        line-height: 1.45;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .status {
+        font-weight: 600;
+        color: #c7d2fe;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Fit Stealer — Dev upload</h1>
+      <p>
+        Throwaway tester for Dev 2. Posts a screenshot to
+        <code>POST /api/identify</code>, then polls <code>GET /jobs/:id</code>.
+        Expo UI stays Dev 1's.
+      </p>
+      <form id="upload-form">
+        <label>
+          Screenshot
+          <input id="image" name="image" type="file" accept="image/*" required />
+        </label>
+        <button type="submit">Identify</button>
+        <div class="status" id="status">Idle</div>
+      </form>
+      <pre id="output">{}</pre>
+    </main>
+    <script>
+      (function liveReload() {
+        let armed = false;
+        const connect = () => {
+          const source = new EventSource("/dev/reload");
+          source.onopen = () => {
+            if (armed) {
+              source.close();
+              window.location.reload();
+              return;
+            }
+            armed = true;
+          };
+          source.onerror = () => {
+            source.close();
+            setTimeout(connect, 600);
+          };
+        };
+        connect();
+      })();
+
+      const form = document.getElementById("upload-form");
+      const imageInput = document.getElementById("image");
+      const statusEl = document.getElementById("status");
+      const outputEl = document.getElementById("output");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const file = imageInput.files[0];
+        if (!file) {
+          statusEl.textContent = "Pick an image first.";
+          return;
+        }
+
+        const body = new FormData();
+        body.append("image", file);
+        body.append("type", "image");
+        body.append("origin", "app");
+
+        form.querySelector("button").disabled = true;
+        statusEl.textContent = "Uploading…";
+        outputEl.textContent = "{}";
+
+        try {
+          const create = await fetch("/api/identify", { method: "POST", body });
+          const created = await create.json();
+          if (!create.ok) {
+            throw new Error(created.error || `Identify failed (${create.status})`);
+          }
+
+          const jobId = created.job_id;
+          statusEl.textContent = `Created ${jobId}. Polling…`;
+          outputEl.textContent = JSON.stringify(created, null, 2);
+
+          let result = created;
+          for (let i = 0; i < 90; i += 1) {
+            const poll = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+            result = await poll.json();
+            if (!poll.ok) {
+              throw new Error(result.error || `Poll failed (${poll.status})`);
+            }
+            statusEl.textContent = `status: ${result.status}`;
+            outputEl.textContent = JSON.stringify(result, null, 2);
+            if (result.status === "done" || result.status === "error") break;
+            await new Promise((resolve) => setTimeout(resolve, 400));
+          }
+
+          statusEl.textContent = `status: ${result.status}`;
+          outputEl.textContent = JSON.stringify(result, null, 2);
+        } catch (error) {
+          statusEl.textContent = "Error";
+          outputEl.textContent = error.message || String(error);
+        } finally {
+          form.querySelector("button").disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

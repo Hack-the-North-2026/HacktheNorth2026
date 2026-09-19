@@ -30,6 +30,9 @@ export const FitCard: React.FC<FitCardProps> = ({ match }) => {
         <View style={styles.details}>
           <Text style={styles.title} numberOfLines={1}>{match.title}</Text>
           {match.store_name && <Text style={styles.store} numberOfLines={1}>{match.store_name}</Text>}
+          {match.reason ? (
+            <Text style={styles.reason} numberOfLines={1}>{match.reason}</Text>
+          ) : null}
         </View>
         <View style={styles.trailing}>
           {match.price && (
@@ -73,6 +76,10 @@ const styles = StyleSheet.create({
   store: {
     color: '#6B6B7A',
     fontSize: 12.5,
+  },
+  reason: {
+    color: '#5C5C6B',
+    fontSize: 11.5,
   },
   trailing: {
     alignItems: 'flex-end',

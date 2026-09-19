@@ -25,6 +25,8 @@ from openai import OpenAI
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 load_dotenv()
 
+MIN_CONFIDENCE = 0.5
+
 # ---------------------------------------------------------------------------
 # Garment JSON Schema (strict: true)
 # Architecture doc §6 — Canonical contracts
@@ -184,10 +186,20 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
     raw = response.choices[0].message.content
     result: dict = json.loads(raw)
 
-    # Assign stable UUIDs for any garment that didn't get one
+    kept = []
     for garment in result.get("garments", []):
         if not garment.get("id"):
             garment["id"] = str(uuid.uuid4())
+        try:
+            confidence = float(garment.get("confidence") or 0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        garment["confidence"] = confidence
+        if confidence < MIN_CONFIDENCE:
+            continue
+        kept.append(garment)
+    result["garments"] = kept
+    result["outfit_summary"] = result.get("outfit_summary") or ""
 
     return result
 
