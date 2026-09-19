@@ -21,7 +21,13 @@ const MOCK_RESULT = JSON.parse(
   readFileSync(path.join(__dirname, 'fixtures/identify-result.mock.json'), 'utf8'),
 );
 
-const ALLOWED_ORIGINS = new Set(['app', 'android_overlay', 'android_qs', 'share']);
+const ALLOWED_ORIGINS = new Set([
+  'app',
+  'android_overlay',
+  'android_qs',
+  'share',
+  'ios_share',
+]);
 const IMAGE_MIME = /^image\/(jpeg|jpg|pjpeg|png|webp|heic|heif|gif)$/i;
 const IMAGE_EXT = /\.(jpe?g|png|webp|heic|heif|gif)$/i;
 const ALLOWED_MATCH = new Set(['exact', 'similar']);
