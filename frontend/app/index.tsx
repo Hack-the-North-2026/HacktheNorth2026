@@ -2,9 +2,8 @@ import React, { useRef, useState } from 'react';
 import { StyleSheet, Text, View, Animated, Alert } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import * as Haptics from 'expo-haptics';
-import { identifyImage, MOCK_IDENTIFY_DURATION_MS } from '../lib/api';
-import { setLastResult } from '../lib/resultStore';
+import { startIdentifyJob } from '../lib/api';
+import { setJobPreview } from '../lib/resultStore';
 import { CaptureButton } from '../components/CaptureButton';
 import { ScanningCircle } from '../components/ScanningCircle';
 
@@ -30,13 +29,13 @@ export default function HomeScreen() {
     setUri(imageUri);
     setPhaseAnimated('scanning');
     try {
-      const result = await identifyImage(imageUri);
-      setLastResult(result);
-      await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      router.push('/results');
-      setTimeout(() => setPhaseAnimated('idle'), 500);
-    } catch (error: any) {
-      Alert.alert('Identify Failed', error.message || 'Could not process that screenshot.');
+      const job = await startIdentifyJob(imageUri);
+      setJobPreview(job.job_id, imageUri);
+      router.push(`/job/${job.job_id}`);
+      setTimeout(() => setPhaseAnimated('idle'), 400);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Could not process that screenshot.';
+      Alert.alert('Identify Failed', message);
       setPhaseAnimated('idle');
     }
   };
@@ -78,7 +77,7 @@ export default function HomeScreen() {
 
       <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity }]} pointerEvents="none">
         {uri && phase === 'scanning' && (
-          <ScanningCircle uri={uri} size={176} durationMs={MOCK_IDENTIFY_DURATION_MS} />
+          <ScanningCircle uri={uri} size={176} durationMs={12000} />
         )}
         <Text style={styles.scanTitle}>Identifying your fit</Text>
         <Text style={styles.scanSubtitle}>Matching the pieces to real listings</Text>
