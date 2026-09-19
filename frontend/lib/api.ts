@@ -93,8 +93,10 @@ function mockIdentifyResult(uri: string): IdentifyResult {
   };
 }
 
+export const MOCK_IDENTIFY_DURATION_MS = 2600;
+
 export async function identifyImage(uri: string): Promise<IdentifyResult> {
-  await new Promise((resolve) => setTimeout(resolve, 600));
+  await new Promise((resolve) => setTimeout(resolve, MOCK_IDENTIFY_DURATION_MS));
   return mockIdentifyResult(uri);
 }
 
