@@ -1,5 +1,5 @@
 import React, { useEffect, useRef } from 'react';
-import { Animated, Easing, StyleSheet, View } from 'react-native';
+import { Animated, Easing, Platform, StyleSheet, View } from 'react-native';
 
 interface PulseRingsProps {
   size: number;
@@ -7,6 +7,8 @@ interface PulseRingsProps {
   ringCount?: number;
   active?: boolean;
 }
+
+const useNativeDriver = Platform.OS !== 'web';
 
 export const PulseRings: React.FC<PulseRingsProps> = ({ size, color, ringCount = 3, active = true }) => {
   const anims = useRef(Array.from({ length: ringCount }, () => new Animated.Value(0))).current;
@@ -21,9 +23,9 @@ export const PulseRings: React.FC<PulseRingsProps> = ({ size, color, ringCount =
             toValue: 1,
             duration: 1600,
             easing: Easing.out(Easing.ease),
-            useNativeDriver: true,
+            useNativeDriver,
           }),
-          Animated.timing(value, { toValue: 0, duration: 0, useNativeDriver: true }),
+          Animated.timing(value, { toValue: 0, duration: 0, useNativeDriver }),
           Animated.delay(1600 - (index * 1600) / ringCount),
         ])
       )
@@ -33,7 +35,7 @@ export const PulseRings: React.FC<PulseRingsProps> = ({ size, color, ringCount =
   }, [active, anims, ringCount]);
 
   return (
-    <View style={[styles.container, { width: size, height: size }]} pointerEvents="none">
+    <View style={[styles.container, { width: size, height: size, pointerEvents: 'none' }]}>
       {anims.map((value, index) => (
         <Animated.View
           key={index}

@@ -37,25 +37,48 @@ function guessFilename(uri: string): string {
   return raw.includes('.') ? raw : `${raw}.jpg`;
 }
 
-function guessMime(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase();
-  if (ext === 'png') return 'image/png';
-  if (ext === 'webp') return 'image/webp';
-  if (ext === 'heic' || ext === 'heif') return 'image/heic';
-  return 'image/jpeg';
+function uploadFilename(uri: string, fileName?: string | null, mimeType?: string | null): string {
+  if (fileName && fileName.includes('.')) return fileName;
+  const guessed = fileName || guessFilename(uri);
+  if (guessed.includes('.')) return guessed;
+  const ext = mimeType?.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+  return `${guessed}.${ext}`;
 }
 
-async function buildIdentifyForm(uri: string): Promise<FormData> {
-  const form = new FormData();
-  const filename = guessFilename(uri);
-  const type = guessMime(filename);
-
+async function readUriAsBlob(uri: string): Promise<Blob> {
   if (Platform.OS === 'web') {
-    const blob = await (await fetch(uri)).blob();
-    form.append('image', blob, filename);
-  } else {
-    form.append('image', { uri, name: filename, type } as unknown as Blob);
+    const response = await fetch(uri);
+    return response.blob();
   }
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.onload = () => {
+      const blob = xhr.response as Blob | null;
+      if (!blob) {
+        reject(new Error('Could not read the selected image.'));
+        return;
+      }
+      resolve(blob);
+    };
+    xhr.onerror = () => reject(new Error('Could not read the selected image.'));
+    xhr.responseType = 'blob';
+    xhr.open('GET', uri);
+    xhr.send();
+  });
+}
+
+export type IdentifyUpload = {
+  uri: string;
+  fileName?: string | null;
+  mimeType?: string | null;
+};
+
+async function buildIdentifyForm(upload: IdentifyUpload): Promise<FormData> {
+  const form = new FormData();
+  const filename = uploadFilename(upload.uri, upload.fileName, upload.mimeType);
+  const blob = await readUriAsBlob(upload.uri);
+  form.append('image', blob, filename);
   form.append('type', 'image');
   form.append('origin', 'app');
   return form;
@@ -73,10 +96,11 @@ async function readJson<T>(response: Response): Promise<T> {
   return data;
 }
 
-export async function startIdentifyJob(uri: string): Promise<IdentifyResult> {
+export async function startIdentifyJob(upload: string | IdentifyUpload): Promise<IdentifyResult> {
+  const image = typeof upload === 'string' ? { uri: upload } : upload;
   const response = await fetch(`${getApiBaseUrl()}/api/identify`, {
     method: 'POST',
-    body: await buildIdentifyForm(uri),
+    body: await buildIdentifyForm(image),
     headers: { Accept: 'application/json' },
   });
   return readJson<IdentifyResult>(response);
