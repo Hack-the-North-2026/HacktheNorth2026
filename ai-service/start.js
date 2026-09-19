@@ -26,7 +26,7 @@ if (fs.existsSync(winVenvPython)) {
 
 const isDev = process.argv.includes('--dev');
 const port = process.env.AI_SERVICE_PORT || '8000';
-const args = ['-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', port];
+const args = ['-m', 'uvicorn', 'main:app', '--host', '0.0.0.0', '--port', port, '--no-access-log'];
 if (isDev) {
   args.push('--reload');
 }

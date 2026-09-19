@@ -49,10 +49,23 @@ export default function JobScreen() {
     const poll = async () => {
       try {
         await withIdentifySpan(jobId, async () => {
+          const lastStatus = { current: null as string | null };
           const started = Date.now();
           while (!cancelled) {
             const job = await getIdentifyJob(jobId);
             if (cancelled) return;
+            if (job.status !== lastStatus.current) {
+              lastStatus.current = job.status;
+              const short = jobId.replace(/-/g, '').slice(0, 8);
+              console.log(`return — Job ${short} status: ${job.status}`);
+              if (job.status === 'done') {
+                const matches = job.items.reduce((n, item) => n + item.matches.length, 0);
+                console.log(`return — Job ${short} showing ${job.items.length} clothes, ${matches} shop matches`);
+              }
+              if (job.status === 'error') {
+                console.log(`return — Job ${short} failed: ${job.error || 'unknown error'}`);
+              }
+            }
             setResult(job);
             if (job.status === 'done' || job.status === 'error') {
               return job;

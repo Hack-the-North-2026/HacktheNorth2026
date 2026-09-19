@@ -1,6 +1,8 @@
 import React, { useRef, useState } from 'react';
-import { StyleSheet, Text, View, Animated, Alert, Platform } from 'react-native';
+import { StyleSheet, Text, View, Animated, Alert, Platform, Pressable } from 'react-native';
 import { useRouter } from 'expo-router';
+import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob } from '../lib/api';
 import { setJobPreview } from '../lib/resultStore';
@@ -13,6 +15,7 @@ const useNativeDriver = Platform.OS !== 'web';
 
 export default function HomeScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [phase, setPhase] = useState<Phase>('idle');
   const [uri, setUri] = useState<string | null>(null);
 
@@ -70,6 +73,15 @@ export default function HomeScreen() {
     <View style={styles.container}>
       <Animated.View style={[styles.layer, { opacity: idleOpacity, pointerEvents: phase === 'idle' ? 'auto' : 'none' }]}>
         <Text style={styles.title}>Fit Stealer</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Recently searched"
+          onPress={() => router.push('/recent')}
+          style={[styles.recentButton, { top: Math.max(insets.top, 16) + 8 }]}
+        >
+          <Ionicons name="time-outline" size={16} color="#F5F5FA" />
+          <Text style={styles.recentLabel}>Recent</Text>
+        </Pressable>
         <View style={styles.buttonWrap}>
           <CaptureButton disabled={phase !== 'idle'} onPress={pickFromLibrary} onLongPress={takePhoto} />
         </View>
@@ -109,6 +121,24 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#F5F5FA',
     letterSpacing: 0.3,
+  },
+  recentButton: {
+    position: 'absolute',
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(10, 10, 16, 0.55)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  recentLabel: {
+    color: '#F5F5FA',
+    fontSize: 13,
+    fontWeight: '600',
   },
   buttonWrap: {
     marginBottom: 28,

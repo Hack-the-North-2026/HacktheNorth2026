@@ -25,10 +25,10 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from logging_config import configure_logging
+from logging_config import bind_job, configure_logging, garment_name, job_id_var
 
 configure_logging()
 logger = logging.getLogger("fit_stealer.api")
@@ -71,36 +71,26 @@ app.add_middleware(
 @app.middleware("http")
 async def request_logging(request, call_next):
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    bind_job(request.headers.get("x-job-id"))
     started = time.perf_counter()
+    path = request.url.path
     try:
         response = await call_next(request)
     except Exception:
-        logger.exception(
-            "http.unhandled",
-            extra={
-                "context": {
-                    "request_id": request_id,
-                    "method": request.method,
-                    "path": request.url.path,
-                    "duration_ms": round((time.perf_counter() - started) * 1000),
-                }
-            },
-        )
+        took = round((time.perf_counter() - started) * 1000)
+        logger.exception("HTTP %s %s crashed after %sms", request.method, path, took)
         raise
     response.headers["x-request-id"] = request_id
-    context = {
-        "request_id": request_id,
-        "method": request.method,
-        "path": request.url.path,
-        "status": response.status_code,
-        "duration_ms": round((time.perf_counter() - started) * 1000),
-    }
+    if response.status_code < 400:
+        return response
+    if path in {"/", "/health"} or path.startswith("/json"):
+        return response
+    took = round((time.perf_counter() - started) * 1000)
+    line = f"HTTP {response.status_code} {request.method} {path} ({took}ms)"
     if response.status_code >= 500:
-        logger.error("http.request", extra={"context": context})
-    elif response.status_code >= 400:
-        logger.warning("http.request", extra={"context": context})
+        logger.error(line)
     else:
-        logger.info("http.request", extra={"context": context})
+        logger.warning(line)
     return response
 
 # Temp directory for uploaded images and chip output
@@ -108,6 +98,11 @@ _UPLOAD_DIR = Path(tempfile.gettempdir()) / "fit-stealer-uploads"
 _CHIPS_DIR  = Path(tempfile.gettempdir()) / "fit-stealer-chips"
 _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 _CHIPS_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.on_event("startup")
+def on_startup():
+    logger.info("AI service ready — See (Baseten) · Crop · Shopify · Rank (OpenAI) · Browserbase off")
 
 
 # ---------------------------------------------------------------------------
@@ -209,10 +204,13 @@ async def tools_see(
     """
     if image is not None:
         suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
-        job_id = str(uuid.uuid4())
-        raw_path = _UPLOAD_DIR / f"{job_id}-raw{suffix}"
+        file_id = str(uuid.uuid4())
+        if not job_id_var.get():
+            bind_job(file_id)
+        raw_path = _UPLOAD_DIR / f"{file_id}-raw{suffix}"
         raw_path.write_bytes(await image.read())
-        image_path = prepare_image_for_see(str(raw_path), str(_UPLOAD_DIR / f"{job_id}.jpg"))
+        logger.info("see — preparing uploaded image")
+        image_path = prepare_image_for_see(str(raw_path), str(_UPLOAD_DIR / f"{file_id}.jpg"))
         try:
             raw_path.unlink(missing_ok=True)
         except OSError:
@@ -233,10 +231,10 @@ async def tools_see(
     try:
         result = analyze_frames_with_vlm([image_path])
     except ValueError as e:
-        logger.warning("see.invalid_request", extra={"context": {"error": str(e)}})
+        logger.warning("see — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("see.failed")
+        logger.exception("see — Baseten failed")
         raise HTTPException(status_code=502, detail=f"Baseten error: {e}")
 
     return SeeResponse(
@@ -254,7 +252,7 @@ async def tools_see(
 # ---------------------------------------------------------------------------
 
 @app.post("/tools/crop", response_model=CropResponse)
-def tools_crop(body: CropRequest):
+def tools_crop(body: CropRequest, request: Request):
     """
     Crop step — take normalized bbox coords from VLM, save .jpg chips.
 
@@ -269,6 +267,7 @@ def tools_crop(body: CropRequest):
       If Dev 2 downscales before sending to See, they must also send the
       downscaled image to Crop — not the original 4K file.
     """
+    bind_job(request.headers.get("x-job-id"))
     image_path = body.image_path
     if not Path(image_path).exists():
         raise HTTPException(
@@ -279,7 +278,7 @@ def tools_crop(body: CropRequest):
     try:
         updated = crop_garments(image_path, body.garments, str(_CHIPS_DIR))
     except Exception as e:
-        logger.exception("crop.failed")
+        logger.exception("crop — failed")
         raise HTTPException(status_code=500, detail=f"Crop error: {e}")
 
     return CropResponse(garments=updated)
@@ -292,10 +291,13 @@ def tools_crop(body: CropRequest):
 # ---------------------------------------------------------------------------
 
 @app.post("/tools/source-rank", response_model=SourceRankResponse)
-def tools_source_rank(body: SourceRankRequest):
+def tools_source_rank(body: SourceRankRequest, request: Request):
     """Return at most three exact/similar matches for one garment."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
     chip_base64 = body.chip.data if body.chip else None
     matches = source_and_rank(body.garment, chip_base64)
+    logger.info("source — %s: returning %s matches", name, len(matches))
     return SourceRankResponse(matches=matches)
 
 
@@ -325,10 +327,13 @@ async def api_identify(
     Express orchestrator wires /tools/see and /tools/crop separately.
     """
     suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
-    job_id = str(uuid.uuid4())
-    raw_path = _UPLOAD_DIR / f"{job_id}-raw{suffix}"
+    file_id = str(uuid.uuid4())
+    if not job_id_var.get():
+        bind_job(file_id)
+    raw_path = _UPLOAD_DIR / f"{file_id}-raw{suffix}"
     raw_path.write_bytes(await image.read())
-    image_path = prepare_image_for_see(str(raw_path), str(_UPLOAD_DIR / f"{job_id}.jpg"))
+    logger.info("see — preparing uploaded image")
+    image_path = prepare_image_for_see(str(raw_path), str(_UPLOAD_DIR / f"{file_id}.jpg"))
     try:
         raw_path.unlink(missing_ok=True)
     except OSError:
@@ -337,10 +342,10 @@ async def api_identify(
     try:
         result = analyze_frames_with_vlm([image_path])
     except ValueError as e:
-        logger.warning("identify.invalid_request", extra={"context": {"error": str(e)}})
+        logger.warning("see — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.exception("identify.see_failed")
+        logger.exception("see — Baseten failed")
         raise HTTPException(status_code=502, detail=f"Baseten error: {e}")
 
     garments = result.get("garments", [])
@@ -348,8 +353,8 @@ async def api_identify(
 
     try:
         garments = crop_garments(image_path, garments, str(_CHIPS_DIR))
-    except Exception as e:
-        logger.exception("identify.crop_failed")
+    except Exception:
+        logger.exception("crop — failed, returning garments without chips")
 
     return IdentifyResponse(
         garments=garments,

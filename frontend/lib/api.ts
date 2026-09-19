@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { IdentifyResult } from './types';
+import { IdentifyResult, RecentSearch } from './types';
+import { getDeviceId } from './device';
 
 function hostFromExpo(): string | null {
   const hostUri =
@@ -81,6 +82,7 @@ async function buildIdentifyForm(upload: IdentifyUpload): Promise<FormData> {
   form.append('image', blob, filename);
   form.append('type', 'image');
   form.append('origin', 'app');
+  form.append('device_id', await getDeviceId());
   return form;
 }
 
@@ -98,12 +100,17 @@ async function readJson<T>(response: Response): Promise<T> {
 
 export async function startIdentifyJob(upload: string | IdentifyUpload): Promise<IdentifyResult> {
   const image = typeof upload === 'string' ? { uri: upload } : upload;
+  const filename = uploadFilename(image.uri, image.fileName, image.mimeType);
+  console.log(`capture — uploading "${filename}" to backend`);
   const response = await fetch(`${getApiBaseUrl()}/api/identify`, {
     method: 'POST',
     body: await buildIdentifyForm(image),
     headers: { Accept: 'application/json' },
   });
-  return readJson<IdentifyResult>(response);
+  const job = await readJson<IdentifyResult>(response);
+  const short = String(job.job_id || '').replace(/-/g, '').slice(0, 8);
+  console.log(`capture — Job ${short} created, waiting for results`);
+  return job;
 }
 
 export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
@@ -116,4 +123,15 @@ export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
 export async function checkBackendHealth() {
   const response = await fetch(`${getApiBaseUrl()}/health`);
   return readJson(response);
+}
+
+export async function listRecentSearches(): Promise<RecentSearch[]> {
+  const response = await fetch(`${getApiBaseUrl()}/recent-searches`, {
+    headers: {
+      Accept: 'application/json',
+      'x-device-id': await getDeviceId(),
+    },
+  });
+  const data = await readJson<{ searches?: RecentSearch[] }>(response);
+  return Array.isArray(data.searches) ? data.searches : [];
 }
