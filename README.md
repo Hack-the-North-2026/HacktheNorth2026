@@ -67,9 +67,12 @@ Set your API keys and ports:
 From the project root:
 
 ```bash
-npm install
+npm ci
 npm run install:all
 ```
+
+On macOS, install [Watchman](https://facebook.github.io/watchman/docs/install)
+before starting Metro. This prevents `EMFILE: too many open files` failures.
 
 Then set up the Python AI service:
 
@@ -162,12 +165,21 @@ Xcode may require you to rebuild and reinstall the app.
 Requirements:
 
 - A Mac with the full Xcode app installed
+- CocoaPods 1.15.2 or newer and Watchman installed
 - A physical iPhone connected to the Mac
 - An Apple Account added in **Xcode → Settings → Accounts**
 - A public HTTPS URL that forwards to the backend on port `4000`
 - The backend and AI service running with the required API keys
 
 Expo Go cannot load an iOS Share Extension. You must install a native build.
+
+Before building, verify that `xcode-select -p` points inside
+`/Applications/Xcode.app`. If it does not, run:
+
+```bash
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -runFirstLaunch
+```
 
 1. Start the backend and AI service from the project root:
 
