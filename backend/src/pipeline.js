@@ -10,8 +10,10 @@ import {
   scrubChipKeys,
 } from './cleanup.js';
 import { downscaleUpload } from './downscale.js';
+import { getCachedIdentify, setCachedIdentify } from './identifyCache.js';
 import { createJob, updateJob } from './jobs.js';
 import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
+import { canonicalizeQuery } from './queryCanonicalize.js';
 import { Sentry } from './sentry.js';
 import { agentLog, jobMsg, logger } from './logger.js';
 import { perceive, perceiveVideo, resolveSourceMode, sourceAndRank } from './tools.js';
@@ -62,11 +64,17 @@ export function parseMockFlags() {
 
 function normalizeGarment(garment, index) {
   if (!garment || typeof garment !== 'object') return null;
+  const searchQuery = canonicalizeQuery(garment.search_query || garment.description || 'clothing');
+  const queries = Array.isArray(garment.queries)
+    ? [...new Set(garment.queries.map((query) => canonicalizeQuery(query)).filter(Boolean))].slice(0, 3)
+    : [];
+  if (searchQuery && !queries.includes(searchQuery)) queries.unshift(searchQuery);
   return {
     id: String(garment.id || `garment-${index + 1}`),
     category: garment.category || 'accessory',
     description: garment.description || garment.search_query || 'Clothing item',
-    search_query: garment.search_query || garment.description || 'clothing',
+    search_query: searchQuery,
+    queries: queries.slice(0, 3),
     attributes: garment.attributes || { color: 'unknown' },
     brand: garment.brand ?? null,
     brand_cues: Array.isArray(garment.brand_cues) ? garment.brand_cues : [],
@@ -94,6 +102,8 @@ function normalizeMatches(matches) {
       match_type: match.match_type,
       confidence: Number(match.confidence ?? 0),
       reason: match.reason || '',
+      visual_score: Number.isFinite(Number(match.visual_score)) ? Number(match.visual_score) : undefined,
+      visual_label: match.visual_label,
     }));
 }
 
@@ -122,6 +132,28 @@ function mockSeeResult() {
   return {
     garments: MOCK_RESULT.items.map((item) => item.garment),
     outfit_summary: MOCK_RESULT.outfit_summary || '',
+  };
+}
+
+function bestVisualScore(ranked) {
+  let best = null;
+  for (const item of ranked || []) {
+    for (const match of item.matches || []) {
+      const score = Number(match.visual_score);
+      if (!Number.isFinite(score)) continue;
+      best = best == null ? score : Math.max(best, score);
+    }
+  }
+  return best;
+}
+
+function matchingFields(garments, extra = {}) {
+  return {
+    image_hash: extra.image_hash || null,
+    phash: extra.phash || null,
+    search_query: (garments || []).map((g) => g?.search_query).filter(Boolean),
+    visual_score: extra.visual_score ?? null,
+    ...extra,
   };
 }
 
@@ -200,6 +232,42 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     if (mediaType === 'image') {
       await downscaleUpload(file, jobId);
     }
+    const imageHash = mediaType === 'image' ? file?.image_hash || null : null;
+    const phash = mediaType === 'image' ? file?.phash || null : null;
+    try {
+      Sentry.getActiveSpan()?.setAttribute('image_hash', imageHash || '');
+      if (phash) Sentry.getActiveSpan()?.setAttribute('phash', phash);
+    } catch {
+      // Tracing attributes are optional.
+    }
+
+    const cached = getCachedIdentify(imageHash);
+    if (cached) {
+      logger.info(jobMsg(jobId, `cache hit — returning identical IdentifyResult (${String(imageHash).slice(0, 12)})`));
+      Sentry.logger.info('identify.cache_hit', {
+        job_id: jobId,
+        origin,
+        ...matchingFields(cached.items?.map((item) => item.garment) || [], {
+          image_hash: imageHash,
+          phash,
+          garment_count: cached.items?.length || 0,
+        }),
+      });
+      // #region agent log
+      agentLog('F', 'pipeline.js:cache', 'identify cache hit', {
+        jobId,
+        imageHash,
+        phash,
+        clothes: cached.items?.length || 0,
+      });
+      // #endregion
+      commit(jobId, ctx, {
+        status: 'done',
+        outfit_summary: cached.outfit_summary || '',
+        items: cached.items || [],
+      });
+      return;
+    }
     commit(jobId, ctx, { status: 'seeing' });
 
     let perceived;
@@ -236,6 +304,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         origin,
         garment_count: 0,
         shopify_hits: 0,
+        ...matchingFields([], { image_hash: imageHash, phash }),
       });
       // #region agent log
       agentLog('A', 'pipeline.js:empty', 'no garments after confidence filter', {
@@ -251,6 +320,12 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         keyframes: perceived?.keyframes || [],
         thumbnail_url: perceived?.keyframes?.[0] || undefined,
       });
+      if (imageHash && mocks.size === 0) {
+        setCachedIdentify(imageHash, {
+          outfit_summary: perceived?.outfit_summary || '',
+          items: [],
+        });
+      }
       return;
     }
 
@@ -267,6 +342,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         category: g.category,
         description: g.description,
         search_query: g.search_query,
+        queries: g.queries,
         brand: g.brand,
         brand_cues: g.brand_cues,
         confidence: g.confidence,
@@ -290,9 +366,10 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     if (sourceMode === 'mock') {
       logger.warn(jobMsg(jobId, 'source — Shopify tools unavailable, using mock matches'));
     } else {
-      logger.info(jobMsg(jobId, 'source — Shopify yes · Browserbase skipped · Composio skipped'));
+      logger.info(jobMsg(jobId, 'source — Shopify fan-out · Composio if catalog thin · Browserbase skipped'));
     }
 
+    let usedMock = sourceMode === 'mock';
     let ranked;
     try {
       ranked = await Promise.all(
@@ -302,6 +379,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
           }
           const matches = await sourceAndRank(garment, jobId);
           if (matches == null) {
+            usedMock = true;
             logger.warn(jobMsg(jobId, `source — ${garment.category}: no live results, using mock matches`));
             // #region agent log
             agentLog('D', 'pipeline.js:mockFallback', 'used mock matches', { jobId, category: garment.category });
@@ -331,6 +409,11 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       origin,
       garment_count: ranked.length,
       shopify_hits: matchCount,
+      ...matchingFields(ranked.map((item) => item.garment), {
+        image_hash: imageHash,
+        phash,
+        visual_score: bestVisualScore(ranked),
+      }),
     });
     // #region agent log
     agentLog('D', 'pipeline.js:done', 'identify result', {
@@ -341,6 +424,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       items: ranked.map((item) => ({
         category: item.garment?.category,
         search_query: item.garment?.search_query,
+        queries: item.garment?.queries,
         usedMock: sourceMode === 'mock',
         matchCount: (item.matches || []).length,
         matches: (item.matches || []).map((m) => ({
@@ -354,13 +438,22 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
           hasImage: Boolean(m.image_url),
           reason: m.reason,
           confidence: m.confidence,
+          visual_score: m.visual_score,
+          visual_label: m.visual_label,
         })),
       })),
     });
     // #endregion
+    const items = scrubChipKeys(ranked);
+    if (!usedMock && mocks.size === 0 && imageHash) {
+      setCachedIdentify(imageHash, {
+        outfit_summary: perceived?.outfit_summary || '',
+        items,
+      });
+    }
     commit(jobId, ctx, {
       status: 'done',
-      items: scrubChipKeys(ranked),
+      items,
       keyframes: perceived.keyframes || [],
       thumbnail_url: perceived.keyframes?.[0] || undefined,
     });

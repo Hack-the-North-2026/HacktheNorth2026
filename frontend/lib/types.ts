@@ -22,6 +22,7 @@ export type Garment = {
   category: GarmentCategory;
   description: string;
   search_query: string;
+  queries?: string[];
   attributes: { color: string; material?: string; pattern?: string; fit?: string };
   brand: string | null;
   brand_cues: string[];
@@ -47,6 +48,8 @@ export type Match = ProductCandidate & {
   match_type: 'exact' | 'similar';
   confidence: number;
   reason: string;
+  visual_score?: number;
+  visual_label?: 'same_item' | 'similar' | 'different';
 };
 
 export type IdentifyStatus = 'queued' | 'ingesting' | 'seeing' | 'sourcing' | 'ranking' | 'done' | 'error';

@@ -3,9 +3,10 @@ import path from 'node:path';
 import { agentLog, jobMsg, logger } from './logger.js';
 
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
-const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 45_000);
+const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 60_000);
 const VIDEO_TIMEOUT_MS = Number(process.env.VIDEO_TIMEOUT_MS || 90_000);
-const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || 15_000);
+const SEE_CHIP_TIMEOUT_MS = Number(process.env.SEE_CHIP_TIMEOUT_MS || 45_000);
+const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || 50_000);
 
 let cachedSourceMode;
 
@@ -133,8 +134,25 @@ export async function cropGarments(imagePath, garments, jobId) {
   return Array.isArray(data.garments) ? data.garments : garments;
 }
 
+export async function seeChips(garments, jobId) {
+  const url = `${AI_SERVICE_URL()}/tools/see-chip`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: jobHeaders(jobId, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ garments }),
+    signal: AbortSignal.timeout(SEE_CHIP_TIMEOUT_MS),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `SeeChip failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  return Array.isArray(data.garments) ? data.garments : garments;
+}
+
 export async function perceive(file, jobId) {
-  logger.info(jobMsg(jobId, 'see — sending photo to AI (Baseten VLM + crop)'));
+  logger.info(jobMsg(jobId, 'see — sending photo to AI (Baseten scene + crop + chip)'));
   try {
     return await seeAndCrop(file, jobId);
   } catch (error) {
@@ -149,6 +167,12 @@ export async function perceive(file, jobId) {
         logger.warn(jobMsg(jobId, 'crop — failed, continuing without garment chips'));
         logger.warn(cropError instanceof Error ? cropError.message : String(cropError));
       }
+    }
+    try {
+      seen.garments = await seeChips(seen.garments, jobId);
+    } catch (chipError) {
+      logger.warn(jobMsg(jobId, 'see-chip — failed, using scene descriptions'));
+      logger.warn(chipError instanceof Error ? chipError.message : String(chipError));
     }
     return seen;
   }
@@ -224,7 +248,7 @@ export async function sourceAndRank(garment, jobId) {
   // #endregion
 
   if (mode === 'source-rank') {
-    logger.info(jobMsg(jobId, `source — ${label}: calling Shopify + OpenAI rank`));
+    logger.info(jobMsg(jobId, `source — ${label}: Shopify fan-out + rank`));
     const { response, data } = await postJson(
       '/tools/source-rank',
       { garment, chip },

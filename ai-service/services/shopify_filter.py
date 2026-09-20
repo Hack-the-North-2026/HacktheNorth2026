@@ -174,19 +174,26 @@ def search_shopify_catalog(
     garment: dict[str, Any],
     chip_base64: str | None = None,
     *,
-    limit: int = 5,
+    query: str | None = None,
+    use_like: bool | None = None,
+    limit: int = 10,
     country: str = "CA",
     currency: str = "CAD",
-    timeout: float = 15.0,
+    timeout: float = 12.0,
     session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
     """Search Global Catalog by garment text and optional cropped image."""
-    query = str(garment.get("search_query") or garment.get("description") or "").strip()
+    query = str(
+        query
+        if query is not None
+        else garment.get("search_query") or garment.get("description") or ""
+    ).strip()
     if not query:
         raise ValueError("garment.search_query or garment.description is required")
     limit = max(1, min(int(limit), 10))
+    attach_like = bool(chip_base64) if use_like is None else bool(use_like and chip_base64)
     name = garment_name(garment)
-    chip_note = "with photo chip" if chip_base64 else "text only, no chip"
+    chip_note = "with photo chip" if attach_like else "text only, no chip"
     logger.info('shopify — %s: searching "%s" (%s)', name, query[:80], chip_note)
     catalog: dict[str, Any] = {
         "query": query,
@@ -200,7 +207,7 @@ def search_shopify_catalog(
         },
         "pagination": {"limit": limit},
     }
-    if chip_base64:
+    if attach_like:
         catalog["like"] = [
             {"image": {"content_type": "image/jpeg", "data": chip_base64}}
         ]
@@ -218,39 +225,46 @@ def search_shopify_catalog(
         },
     }
     client = session or requests.Session()
-    try:
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+
+    def _post() -> dict[str, Any]:
         response = client.post(
             SHOPIFY_CATALOG_URL,
             json=body,
-            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            headers=headers,
             timeout=timeout,
         )
         response.raise_for_status()
         payload = response.json()
-    except (requests.RequestException, ValueError) as exc:
-        raise ShopifyCatalogError(f"Shopify Global Catalog request failed: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise ShopifyCatalogError("Shopify Global Catalog returned a non-object payload")
+        return payload
+
     try:
+        payload = _post()
         products = _extract_products(payload)
-    except ShopifyCatalogError as exc:
+    except (requests.RequestException, ValueError, ShopifyCatalogError) as exc:
         message = str(exc).lower()
         transient = any(
             marker in message
-            for marker in ("service error", "temporar", "rate limit", "try again")
+            for marker in (
+                "429",
+                "too many requests",
+                "rate limit",
+                "service error",
+                "temporar",
+                "try again",
+                "502",
+                "503",
+            )
         )
         if not transient:
-            raise
+            raise ShopifyCatalogError(f"Shopify Global Catalog request failed: {exc}") from exc
         logger.warning("shopify — %s: transient error, retrying", name)
-        time.sleep(0.25)
+        time.sleep(0.8)
         try:
-            response = client.post(
-                SHOPIFY_CATALOG_URL,
-                json=body,
-                headers={"Accept": "application/json", "Content-Type": "application/json"},
-                timeout=timeout,
-            )
-            response.raise_for_status()
-            products = _extract_products(response.json())
-        except (requests.RequestException, ValueError) as retry_exc:
+            products = _extract_products(_post())
+        except (requests.RequestException, ValueError, ShopifyCatalogError) as retry_exc:
             raise ShopifyCatalogError(
                 f"Shopify Global Catalog retry failed: {retry_exc}"
             ) from retry_exc
@@ -265,7 +279,7 @@ def search_shopify_catalog(
         {
             "category": name,
             "query": query[:120],
-            "hasChip": bool(chip_base64),
+            "hasChip": attach_like,
             "rawProducts": len(products),
             "normalized": len(kept),
             "droppedNormalize": len(products) - len(kept),
