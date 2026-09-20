@@ -10,8 +10,8 @@ Endpoints (Stage 1):
   GET  /health        — Liveness probe
 
 Architecture §7.2: This is a TOOL SERVER, not the product API.
-It does not call Shopify, Composio, or the Expo app.
-The Express orchestrator (backend/) owns the pipeline loop.
+See/Crop/SeeChip are perception. /tools/source-rank fans out Shopify
+(and Composio when the catalog is thin). Express owns the job loop.
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ load_dotenv()
 # Import perception services
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
 from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
+from services.see_chip import detail_garments  # noqa: E402
 from services.source_and_rank import source_and_rank  # noqa: E402
 
 # Shared DSN with Expo and Express (root .env SENTRY_DSN)
@@ -115,7 +116,7 @@ _CHIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.on_event("startup")
 def on_startup():
-    logger.info("AI service ready — See (Baseten) · Crop · Shopify · Rank (OpenAI) · Browserbase off")
+    logger.info("AI service ready — SeeScene · SeeChip · VisualJudge (Baseten) · Crop · Shopify fan-out · Composio · Rank (OpenAI) · Browserbase off")
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +158,14 @@ class SourceRankResponse(BaseModel):
     matches: list[dict]
 
 
+class SeeChipRequest(BaseModel):
+    garments: list[dict]
+
+
+class SeeChipResponse(BaseModel):
+    garments: list[dict]
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -172,6 +181,7 @@ def health_check():
         "endpoints": [
             "/tools/see",
             "/tools/crop",
+            "/tools/see-chip",
             "/tools/source-rank",
             "/api/identify",
         ],
@@ -299,9 +309,32 @@ def tools_crop(body: CropRequest, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# POST /tools/see-chip
+# Accepts JSON { garments[] } with chip_key paths from /tools/crop.
+# Second Baseten pass on each crop, OpenAI merge of queries/attributes.
+# ---------------------------------------------------------------------------
+
+@app.post("/tools/see-chip", response_model=SeeChipResponse)
+def tools_see_chip(body: SeeChipRequest, request: Request):
+    """Chip-first See — overwrite scene copy with close-up garment details."""
+    bind_job(request.headers.get("x-job-id"))
+    if not body.garments:
+        return SeeChipResponse(garments=[])
+    try:
+        updated = detail_garments(body.garments)
+    except ValueError as e:
+        logger.warning("see-chip — bad request: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("see-chip — failed")
+        raise HTTPException(status_code=502, detail=f"SeeChip error: {e}")
+    return SeeChipResponse(garments=updated)
+
+
+# ---------------------------------------------------------------------------
 # POST /tools/source-rank
 # Accepts Dev 2's JSON { garment, chip?: { content_type, data } }.
-# Runs Shopify Global Catalog sourcing followed by the OpenAI ranker.
+# Stage D: 2–3 Shopify searches in parallel, Composio if thin, then VisualJudge + rank.
 # ---------------------------------------------------------------------------
 
 @app.post("/tools/source-rank", response_model=SourceRankResponse)
@@ -369,6 +402,11 @@ async def api_identify(
         garments = crop_garments(image_path, garments, str(_CHIPS_DIR))
     except Exception:
         logger.exception("crop — failed, returning garments without chips")
+
+    try:
+        garments = detail_garments(garments)
+    except Exception:
+        logger.exception("see-chip — failed, using scene descriptions")
 
     return IdentifyResponse(
         garments=garments,

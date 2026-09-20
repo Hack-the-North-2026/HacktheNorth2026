@@ -17,13 +17,14 @@ import base64
 import json
 import logging
 import os
-import uuid
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from logging_config import agent_log
+from services.query_normalize import canonicalize_query
 
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 load_dotenv()
@@ -31,6 +32,7 @@ load_dotenv()
 logger = logging.getLogger("fit_stealer.see")
 
 MIN_CONFIDENCE = 0.5
+BBOX_BINS = 20
 
 # ---------------------------------------------------------------------------
 # Garment JSON Schema (strict: true)
@@ -109,7 +111,7 @@ Your task: analyze the image and return ONLY the clothing items and accessories 
 Rules you MUST follow:
 1. brand MUST be null unless a logo, label, or clothing tag is CLEARLY and LEGIBLY readable in the image. Never guess. Never infer from the style.
 2. bbox is [x_min, y_min, x_max, y_max] normalized to 0.0–1.0 relative to image dimensions.
-3. chip_key: set to an empty string — it will be filled in by the cropper.
+3. id and chip_key: set both to empty strings — they are filled in after this call.
 4. search_query must be highly specific and optimized for product catalog search. Example: "oversized black leather biker jacket with silver hardware" not just "jacket".
 5. Drop any item with confidence < 0.5.
 6. accessibility_line: one concise sentence describing the item for a visually impaired user.
@@ -117,7 +119,40 @@ Rules you MUST follow:
 8. Do NOT include people, faces, backgrounds, or non-clothing items."""
 
 
-def _encode_image(image_path: str) -> str:
+def quantize_bbox(bbox) -> tuple[int, int, int, int]:
+    """Snap a normalized bbox to 0.05 bins so the same garment keeps the same id."""
+    values = list(bbox or [0, 0, 0, 0])[:4]
+    while len(values) < 4:
+        values.append(0.0)
+    bins: list[int] = []
+    for value in values:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            number = 0.0
+        number = max(0.0, min(1.0, number))
+        bins.append(int(round(number * BBOX_BINS)))
+    return bins[0], bins[1], bins[2], bins[3]
+
+
+def stable_garment_id(category: str | None, bbox, used: set[str] | None = None) -> str:
+    """Deterministic id from category + quantized bbox. No uuid4."""
+    cat = re.sub(r"[^a-z0-9]+", "", str(category or "item").lower()) or "item"
+    q0, q1, q2, q3 = quantize_bbox(bbox)
+    base = f"{cat}-{q0:02d}-{q1:02d}-{q2:02d}-{q3:02d}"
+    taken = used if used is not None else set()
+    if base not in taken:
+        taken.add(base)
+        return base
+    n = 2
+    while f"{base}-{n}" in taken:
+        n += 1
+    ident = f"{base}-{n}"
+    taken.add(ident)
+    return ident
+
+
+def encode_image_data_uri(image_path: str) -> str:
     """Base64-encode an image file to a data URI."""
     path = Path(image_path)
     suffix = path.suffix.lower()
@@ -168,7 +203,7 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
     image_blocks = [
         {
             "type": "image_url",
-            "image_url": {"url": _encode_image(p), "detail": "high"},
+            "image_url": {"url": encode_image_data_uri(p), "detail": "high"},
         }
         for p in image_paths
     ]
@@ -191,7 +226,7 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
         model=model,
         messages=messages,
         response_format=_GARMENT_SCHEMA,
-        temperature=0.1,  # Low temp for consistent structured outputs
+        temperature=0,
         max_tokens=2048,
     )
 
@@ -200,9 +235,8 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
 
     kept = []
     dropped = 0
+    used_ids: set[str] = set()
     for garment in result.get("garments", []):
-        if not garment.get("id"):
-            garment["id"] = str(uuid.uuid4())
         try:
             confidence = float(garment.get("confidence") or 0)
         except (TypeError, ValueError):
@@ -211,7 +245,14 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
         if confidence < MIN_CONFIDENCE:
             dropped += 1
             continue
+        garment["id"] = stable_garment_id(
+            garment.get("category"), garment.get("bbox"), used_ids
+        )
+        garment["search_query"] = canonicalize_query(
+            garment.get("search_query") or garment.get("description") or ""
+        )
         kept.append(garment)
+    kept.sort(key=lambda item: (str(item.get("id") or ""), str(item.get("category") or "")))
     result["garments"] = kept
     result["outfit_summary"] = result.get("outfit_summary") or ""
 
