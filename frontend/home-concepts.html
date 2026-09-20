@@ -1,0 +1,545 @@
+<title>Fit Stealer Home Concepts</title>
+<style>
+  :root {
+    --ivory: #F7F0E4;
+    --surface: #FFFDF8;
+    --muted: #ECE0CC;
+    --sand: #E4D5BB;
+    --accent: #9C6B41;
+    --accent-dk: #6B4423;
+    --espresso: #241a12;
+    --ink: #4A3728;
+    --ink-soft: #8A7860;
+    --faint: #B3A28C;
+    --border: rgba(43, 32, 24, 0.12);
+    --page: #EADFCC;
+    --serif: 'Fraunces', 'Playfair Display', Georgia, serif;
+    --sans: 'Manrope', system-ui, -apple-system, sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(120% 60% at 50% 0%, #F2E9D8 0%, var(--page) 60%) fixed;
+    color: var(--ink);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding-block: 56px 80px;
+    padding-inline: 20px;
+  }
+
+  /* ---------- gallery header ---------- */
+  .eyebrow {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.22em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(34px, 6vw, 58px);
+    line-height: 1.02;
+    letter-spacing: -0.01em;
+    margin: 0 0 18px;
+    max-width: 16ch;
+    text-wrap: balance;
+  }
+  .lede {
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .divider {
+    height: 1px;
+    background: var(--border);
+    margin: 40px 0;
+  }
+
+  /* ---------- concept grid ---------- */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 44px 32px;
+  }
+  .concept { display: flex; flex-direction: column; gap: 18px; }
+
+  .meta { display: flex; flex-direction: column; gap: 7px; }
+  .meta .num {
+    font-family: var(--serif);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    letter-spacing: 0.04em;
+  }
+  .meta h2 {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 22px;
+    margin: 0;
+    line-height: 1.1;
+  }
+  .meta p {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--ink-soft);
+  }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+  .tag {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: var(--accent-dk);
+    background: var(--muted);
+    border-radius: 999px;
+    padding: 4px 10px;
+  }
+
+  /* ---------- phone shell ---------- */
+  .phone {
+    position: relative;
+    width: 100%;
+    max-width: 300px;
+    margin: 0 auto;
+    aspect-ratio: 300 / 640;
+    border-radius: 42px;
+    background: var(--ivory);
+    box-shadow:
+      0 2px 4px rgba(58, 42, 24, 0.10),
+      0 24px 50px -18px rgba(58, 42, 24, 0.42),
+      inset 0 0 0 6px rgba(255, 255, 255, 0.5);
+    overflow: hidden;
+    border: 1px solid rgba(58, 42, 24, 0.18);
+  }
+  .screen {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 42px;
+  }
+  .statusbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 15px 26px 6px;
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  .statusbar .dots { display: flex; gap: 4px; align-items: center; }
+  .statusbar .bar { width: 16px; height: 9px; border-radius: 2px; border: 1.4px solid currentColor; position: relative; opacity: 0.85; }
+  .statusbar .bar::after { content: ""; position: absolute; inset: 1.4px; background: currentColor; border-radius: 1px; }
+  .statusbar .wifi { width: 15px; height: 11px; }
+
+  .body { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+
+  /* clickable "steal" cells */
+  .cell {
+    appearance: none;
+    border: none;
+    font-family: var(--sans);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    transition: transform .15s ease, box-shadow .15s ease, background .15s ease;
+  }
+  .cell:hover { transform: translateY(-2px); }
+  .cell:active { transform: translateY(0) scale(0.985); }
+  .cell:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+
+  .wordmark {
+    font-family: var(--serif);
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .kicker {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase;
+  }
+
+  /* ================= 01 · Editorial Cover ================= */
+  .c1 .screen { background: var(--ivory); color: var(--ink); }
+  .c1 .top { display: flex; align-items: center; justify-content: space-between; padding: 8px 26px 0; }
+  .c1 .top .wordmark { font-size: 15px; }
+  .c1 .recent { font-size: 12px; font-weight: 700; color: var(--ink-soft); letter-spacing: 0.02em; }
+  .c1 .display {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 24px;
+  }
+  .c1 .display b {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: 62px;
+    line-height: 0.9;
+    letter-spacing: -0.02em;
+    display: block;
+  }
+  .c1 .display .em { font-style: italic; color: var(--accent); }
+  .c1 .display .sub {
+    font-size: 13px; color: var(--ink-soft); margin-top: 20px;
+    max-width: 26ch; line-height: 1.5; font-weight: 500;
+  }
+  .c1 .foot { padding: 0 22px 26px; display: flex; flex-direction: column; gap: 10px; }
+  .c1 .cell {
+    background: var(--accent);
+    color: #FBF3E7;
+    font-size: 17px;
+    padding: 19px;
+    border-radius: 20px;
+    box-shadow: 0 14px 26px -12px rgba(107, 68, 35, 0.65);
+  }
+  .c1 .cell:hover { background: var(--accent-dk); }
+  .c1 .hint { text-align: center; font-size: 12px; color: var(--faint); font-weight: 600; }
+
+  /* ================= 02 · Full-bleed Hero ================= */
+  .c2 .screen { color: #F6ECDC; background: var(--espresso); }
+  .c2 .hero { position: absolute; inset: 0; }
+  .c2 .hero .bg {
+    position: absolute; inset: 0;
+    background:
+      radial-gradient(90% 70% at 70% 15%, #B07A44 0%, #7c4f2b 42%, #3a2716 82%, #241a12 100%);
+  }
+  .c2 .grain { position: absolute; inset: 0; opacity: 0.5; mix-blend-mode: overlay;
+    background-image: radial-gradient(rgba(255,255,255,0.5) 0.5px, transparent 0.6px);
+    background-size: 3px 3px; }
+  .c2 .art { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .c2 .art svg { width: 74%; opacity: 0.9; }
+  .c2 .scrim { position: absolute; inset: 0;
+    background: linear-gradient(180deg, rgba(20,14,9,0.35) 0%, rgba(20,14,9,0) 30%, rgba(20,14,9,0.15) 55%, rgba(20,14,9,0.86) 100%); }
+  .c2 .over { position: relative; z-index: 2; display: flex; flex-direction: column; height: 100%; }
+  .c2 .over .top { display: flex; justify-content: space-between; align-items: center; padding: 8px 24px 0; }
+  .c2 .over .top .wordmark { font-size: 14px; color: #F6ECDC; }
+  .c2 .over .pill { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; background: rgba(255,253,248,0.18);
+    padding: 6px 12px; border-radius: 999px; backdrop-filter: blur(4px); color: #F6ECDC; }
+  .c2 .over .fill { flex: 1; }
+  .c2 .over .lower { padding: 0 24px 26px; display: flex; flex-direction: column; gap: 16px; }
+  .c2 .over .kicker { color: #E7C79E; }
+  .c2 .over h3 { font-family: var(--serif); font-weight: 600; font-size: 40px; line-height: 0.98; margin: 8px 0 0; letter-spacing: -0.01em; }
+  .c2 .cell {
+    background: #FBF3E7; color: var(--accent-dk); font-size: 16px; padding: 17px; border-radius: 18px;
+    box-shadow: 0 16px 30px -14px rgba(0,0,0,0.6);
+  }
+  .c2 .cell .plus { font-size: 20px; line-height: 0; }
+
+  /* ================= 03 · Drop Card ================= */
+  .c3 .screen { background: var(--ivory); color: var(--ink); }
+  .c3 .top { text-align: center; padding: 10px 0 0; }
+  .c3 .top .wordmark { font-size: 15px; }
+  .c3 .top .kicker { color: var(--faint); margin-top: 3px; font-size: 10px; }
+  .c3 .stage { flex: 1; display: flex; align-items: center; justify-content: center; padding: 14px 24px; }
+  .c3 .card {
+    width: 100%;
+    background: var(--surface);
+    border-radius: 26px;
+    padding: 30px 22px 26px;
+    box-shadow: 0 20px 40px -22px rgba(58,42,24,0.5);
+    border: 1px solid var(--border);
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    position: relative;
+  }
+  .c3 .card .drop {
+    width: 100%; aspect-ratio: 1 / 0.92; border-radius: 18px;
+    border: 2px dashed rgba(156,107,65,0.5);
+    background: repeating-linear-gradient(135deg, rgba(156,107,65,0.05) 0 10px, transparent 10px 20px), var(--muted);
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+  }
+  .c3 .card .drop .ring { width: 54px; height: 54px; border-radius: 50%; background: var(--accent);
+    display: flex; align-items: center; justify-content: center; color: #FBF3E7; box-shadow: 0 10px 20px -8px rgba(107,68,35,0.7); }
+  .c3 .card .drop .t { font-family: var(--serif); font-weight: 600; font-size: 21px; color: var(--ink); }
+  .c3 .card .drop .s { font-size: 11.5px; color: var(--ink-soft); font-weight: 600; letter-spacing: 0.02em; }
+  .c3 .cell { background: var(--accent); color: #FBF3E7; width: 100%; font-size: 15px; padding: 15px; border-radius: 15px; }
+  .c3 .cell:hover { background: var(--accent-dk); }
+  .c3 .foot { padding: 0 22px 22px; }
+  .c3 .foot .lbl { font-size: 10.5px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--faint); margin-bottom: 9px; }
+  .c3 .thumbs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .c3 .thumbs .t { aspect-ratio: 1; border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    border: 1px solid var(--border); }
+
+  /* ================= 04 · Split / Brutalist ================= */
+  .c4 .screen { background: var(--ivory); }
+  .c4 .top-half { flex: 1; padding: 14px 24px 0; color: var(--ink); position: relative; overflow: hidden; }
+  .c4 .top-half .row { display: flex; justify-content: space-between; align-items: center; }
+  .c4 .top-half .wordmark { font-size: 13px; letter-spacing: 0.02em; }
+  .c4 .top-half .row .kicker { font-size: 10px; color: var(--ink-soft); }
+  .c4 .top-half .big { font-family: var(--serif); font-weight: 600; font-size: 54px; line-height: 0.9;
+    letter-spacing: -0.02em; margin-top: 28px; }
+  .c4 .mark { position: absolute; right: -34px; top: 84px; width: 190px; opacity: 0.9; z-index: 0; }
+  .c4 .bot-half { flex: none; height: 45%; background: var(--espresso); color: #F6ECDC;
+    padding: 22px 24px 24px; display: flex; flex-direction: column; justify-content: space-between; }
+  .c4 .bot-half .big2 { font-family: var(--serif); font-weight: 600; font-size: 44px; line-height: 0.92; letter-spacing: -0.01em; }
+  .c4 .bot-half .big2 .em { color: #E7C79E; font-style: italic; }
+  .c4 .ticker { font-size: 10px; font-weight: 700; letter-spacing: 0.18em; color: #b89066; text-transform: uppercase; }
+  .c4 .cell { background: var(--accent); color: #FBF3E7; font-size: 16px; padding: 16px; border-radius: 4px; letter-spacing: 0.04em; text-transform: uppercase; }
+  .c4 .cell:hover { background: #b17d4d; }
+
+  /* ================= 05 · Marquee / Gallery ================= */
+  .c5 .screen { background: var(--ivory); color: var(--ink); }
+  .c5 .marquee { flex: none; overflow: hidden; padding: 10px 0 8px; border-bottom: 1px solid var(--border); }
+  .c5 .marquee .track { display: inline-flex; white-space: nowrap; animation: slide 16s linear infinite; }
+  .c5 .marquee .track span { font-family: var(--serif); font-style: italic; font-size: 22px; color: var(--accent); padding: 0 4px; }
+  .c5 .marquee .track b { color: var(--faint); padding: 0 8px; font-size: 14px; }
+  @keyframes slide { to { transform: translateX(-50%); } }
+  .c5 .stage { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 26px; padding: 20px; }
+  .c5 .lens { width: 176px; height: 176px; border-radius: 50%; border: 1.5px solid var(--border);
+    display: flex; align-items: center; justify-content: center; position: relative; }
+  .c5 .lens::before { content: ""; position: absolute; inset: 14px; border-radius: 50%; border: 1px dashed rgba(156,107,65,0.35); }
+  .c5 .lens svg { width: 96px; }
+  .c5 .cap { text-align: center; }
+  .c5 .cap .t { font-family: var(--serif); font-size: 26px; font-weight: 600; }
+  .c5 .cap .s { font-size: 11px; color: var(--ink-soft); font-weight: 600; letter-spacing: 0.03em; margin-top: 4px; }
+  .c5 .foot { padding: 0 24px 26px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  .c5 .cell { width: 62px; height: 62px; border-radius: 50%; background: var(--accent); color: #FBF3E7;
+    box-shadow: 0 14px 26px -12px rgba(107,68,35,0.65); }
+  .c5 .cell svg { width: 24px; }
+  .c5 .foot .lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: var(--faint); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .c5 .marquee .track { animation: none; }
+    .cell { transition: none; }
+  }
+
+  @media (max-width: 640px) {
+    .wrap { padding-block: 36px 60px; }
+    .grid { gap: 40px 20px; }
+  }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Fit Stealer · Home Screen</p>
+  <h1>Five ways to open the app</h1>
+  <p class="lede">
+    Five distinct directions for the home screen, all in the warm ivory-and-caramel
+    system with Fraunces display serif over Manrope. Each one keeps the single job front
+    and center — get a screenshot or clip in and start a steal — but frames it with a
+    different personality, from magazine cover to gallery wall.
+  </p>
+
+  <div class="divider"></div>
+
+  <div class="grid">
+
+    <!-- 01 -->
+    <div class="concept">
+      <div class="phone c1">
+        <div class="screen">
+          <div class="statusbar" style="color:var(--ink)">
+            <span>9:41</span>
+            <span class="dots"><svg class="wifi" viewBox="0 0 16 12" fill="currentColor"><path d="M8 11.2 1.2 4.4a9.6 9.6 0 0 1 13.6 0L8 11.2Z" opacity=".9"/></svg><span class="bar"></span></span>
+          </div>
+          <div class="body">
+            <div class="top">
+              <span class="wordmark">Fit Stealer</span>
+              <span class="recent">Recent ↗</span>
+            </div>
+            <div class="display">
+              <b>STEAL</b>
+              <b>THE</b>
+              <b class="em">fit.</b>
+              <span class="sub">Drop a screenshot. We source every piece from real shops in seconds.</span>
+            </div>
+            <div class="foot">
+              <button class="cell">Steal a fit now →</button>
+              <span class="hint">or press &amp; hold to shoot</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="num">01</span>
+        <h2>Editorial Cover</h2>
+        <p>Oversized stacked serif owns the screen like a magazine masthead. One caramel action bar anchors the bottom. Confident, type-led, unmistakably premium.</p>
+        <div class="tags"><span class="tag">Big display type</span><span class="tag">Single CTA bar</span><span class="tag">Minimal</span></div>
+      </div>
+    </div>
+
+    <!-- 02 -->
+    <div class="concept">
+      <div class="phone c2">
+        <div class="screen">
+          <div class="hero">
+            <div class="bg"></div>
+            <div class="grain"></div>
+            <div class="art">
+              <svg viewBox="0 0 120 200" fill="none" stroke="#F6ECDC" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" opacity="0.85">
+                <path d="M60 20a8 8 0 0 0-8 8c0 5 4 7 8 9"/>
+                <path d="M60 37 18 66c-4 3-3 8 2 8h12"/>
+                <path d="M60 37l42 29c4 3 3 8-2 8H90"/>
+                <path d="M32 74c-3 22-6 44-4 70 0 6 2 22 4 30h56c2-8 4-24 4-30 2-26-1-48-4-70"/>
+                <path d="M60 74v100"/>
+              </svg>
+            </div>
+            <div class="scrim"></div>
+          </div>
+          <div class="over">
+            <div class="statusbar" style="color:#F6ECDC">
+              <span>9:41</span>
+              <span class="dots"><svg class="wifi" viewBox="0 0 16 12" fill="currentColor"><path d="M8 11.2 1.2 4.4a9.6 9.6 0 0 1 13.6 0L8 11.2Z" opacity=".9"/></svg><span class="bar"></span></span>
+            </div>
+            <div class="top">
+              <span class="wordmark">Fit Stealer</span>
+              <span class="pill">Recent</span>
+            </div>
+            <div class="fill"></div>
+            <div class="lower">
+              <div>
+                <span class="kicker">See it · Steal it</span>
+                <h3>Steal the<br>fit.</h3>
+              </div>
+              <button class="cell"><span class="plus">+</span> Steal fit now</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="num">02</span>
+        <h2>Full-Bleed Hero</h2>
+        <p>An immersive draped-garment graphic fills the frame with a warm gradient and grain; a floating ivory upload cell sits on the scrim. Feels like a fashion app, not a utility.</p>
+        <div class="tags"><span class="tag">Immersive graphic</span><span class="tag">Floating CTA</span><span class="tag">Moody</span></div>
+      </div>
+    </div>
+
+    <!-- 03 -->
+    <div class="concept">
+      <div class="phone c3">
+        <div class="screen">
+          <div class="statusbar" style="color:var(--ink)">
+            <span>9:41</span>
+            <span class="dots"><svg class="wifi" viewBox="0 0 16 12" fill="currentColor"><path d="M8 11.2 1.2 4.4a9.6 9.6 0 0 1 13.6 0L8 11.2Z" opacity=".9"/></svg><span class="bar"></span></span>
+          </div>
+          <div class="body">
+            <div class="top">
+              <div class="wordmark">Fit Stealer</div>
+              <div class="kicker">Drop · Detect · Shop</div>
+            </div>
+            <div class="stage">
+              <div class="card">
+                <div class="drop">
+                  <div class="ring">
+                    <svg viewBox="0 0 24 24" width="24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V5m0 0-4 4m4-4 4 4"/><path d="M5 18h14"/></svg>
+                  </div>
+                  <div class="t">Drop your fit</div>
+                  <div class="s">screenshot · photo · video</div>
+                </div>
+                <button class="cell">Steal fit now</button>
+              </div>
+            </div>
+            <div class="foot">
+              <div class="lbl">Recent steals</div>
+              <div class="thumbs">
+                <div class="t" style="background:linear-gradient(160deg,#e9d8bd,#d8c09a)"><svg viewBox="0 0 24 24" width="26" fill="none" stroke="#7c552f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4 4 7l2 3 2-1v10h8V9l2 1 2-3-4-3-2 2H10z"/></svg></div>
+                <div class="t" style="background:linear-gradient(160deg,#ecd7c2,#d9b79a)"><svg viewBox="0 0 24 24" width="24" fill="none" stroke="#7c552f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6l1 8-2 1v9H10v-9L8 11z"/></svg></div>
+                <div class="t" style="background:linear-gradient(160deg,#e6dcc6,#cbbf9c)"><svg viewBox="0 0 24 24" width="22" fill="none" stroke="#7c552f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 8h10l1 12H6zM9 8a3 3 0 0 1 6 0"/></svg></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="num">03</span>
+        <h2>The Drop Card</h2>
+        <p>A tactile dashed “drop your fit” card is the hero — an obvious target that invites the screenshot. Recent steals sit as a quiet thumbnail shelf below. Friendly and self-explanatory.</p>
+        <div class="tags"><span class="tag">Upload affordance</span><span class="tag">Recent shelf</span><span class="tag">Approachable</span></div>
+      </div>
+    </div>
+
+    <!-- 04 -->
+    <div class="concept">
+      <div class="phone c4">
+        <div class="screen">
+          <div class="statusbar" style="color:var(--ink)">
+            <span>9:41</span>
+            <span class="dots"><svg class="wifi" viewBox="0 0 16 12" fill="currentColor"><path d="M8 11.2 1.2 4.4a9.6 9.6 0 0 1 13.6 0L8 11.2Z" opacity=".9"/></svg><span class="bar"></span></span>
+          </div>
+          <div class="body">
+            <div class="top-half">
+              <svg class="mark" viewBox="0 0 100 100" fill="none" stroke="#9C6B41" stroke-width="11" stroke-linecap="round" opacity="0.16">
+                <path d="M26 84 50 24l24 60"/><path d="M39 60h22"/>
+              </svg>
+              <div class="row">
+                <span class="wordmark">Fit Stealer</span>
+                <span class="kicker">Recent</span>
+              </div>
+              <div class="big">STEAL</div>
+            </div>
+            <div class="bot-half">
+              <div class="ticker">screenshot in — real listings out —</div>
+              <div class="big2">the <span class="em">fit.</span></div>
+              <button class="cell">Steal fit now</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="num">04</span>
+        <h2>Split Brutalist</h2>
+        <p>A hard ivory-over-espresso split with a giant peak monogram bleeding off-edge. Squared, uppercase caramel button. Bold and graphic — the risk-taker of the set.</p>
+        <div class="tags"><span class="tag">Color block split</span><span class="tag">Monogram</span><span class="tag">High contrast</span></div>
+      </div>
+    </div>
+
+    <!-- 05 -->
+    <div class="concept">
+      <div class="phone c5">
+        <div class="screen">
+          <div class="statusbar" style="color:var(--ink)">
+            <span>9:41</span>
+            <span class="dots"><svg class="wifi" viewBox="0 0 16 12" fill="currentColor"><path d="M8 11.2 1.2 4.4a9.6 9.6 0 0 1 13.6 0L8 11.2Z" opacity=".9"/></svg><span class="bar"></span></span>
+          </div>
+          <div class="body">
+            <div class="marquee">
+              <div class="track">
+                <span>Steal</span><b>✦</b><span>the</span><b>✦</b><span>fit</span><b>✦</b><span>Steal</span><b>✦</b><span>the</span><b>✦</b><span>fit</span><b>✦</b>
+                <span>Steal</span><b>✦</b><span>the</span><b>✦</b><span>fit</span><b>✦</b><span>Steal</span><b>✦</b><span>the</span><b>✦</b><span>fit</span><b>✦</b>
+              </div>
+            </div>
+            <div class="stage">
+              <div class="lens">
+                <svg viewBox="0 0 100 100" fill="none" stroke="#9C6B41" stroke-width="10" stroke-linecap="round">
+                  <path d="M26 82 50 26l24 56"/><path d="M39 60h22"/>
+                </svg>
+              </div>
+              <div class="cap">
+                <div class="t">Steal a look</div>
+                <div class="s">tap to drop a fit</div>
+              </div>
+            </div>
+            <div class="foot">
+              <button class="cell" aria-label="Steal fit now">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>
+              </button>
+              <div class="lbl">18 fits stolen</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="num">05</span>
+        <h2>Gallery Marquee</h2>
+        <p>Gallery-quiet: a scrolling serif marquee up top, the peak mark centered in a lens ring, and one small round add button. Restrained, editorial, very fashion-house.</p>
+        <div class="tags"><span class="tag">Motion marquee</span><span class="tag">Single mark</span><span class="tag">Ultra-minimal</span></div>
+      </div>
+    </div>
+
+  </div>
+</div>

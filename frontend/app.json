@@ -6,8 +6,8 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "dark",
-    "backgroundColor": "#050509",
+    "userInterfaceStyle": "light",
+    "backgroundColor": "#F7F0E4",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.tangedy.fitstealer"
@@ -15,7 +15,7 @@
     "android": {
       "package": "com.fitstealer.app",
       "adaptiveIcon": {
-        "backgroundColor": "#050509",
+        "backgroundColor": "#F7F0E4",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -28,6 +28,15 @@
     },
     "plugins": [
       "expo-router",
+      "expo-video",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#F7F0E4",
+          "image": "./assets/icon.png",
+          "imageWidth": 160
+        }
+      ],
       [
         "expo-image-picker",
         {

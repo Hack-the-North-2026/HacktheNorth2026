@@ -1,12 +1,30 @@
 import { Sentry } from '../lib/sentry';
+import { useCallback, useEffect } from 'react';
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import { router, Stack } from 'expo-router';
 import Constants from 'expo-constants';
 import type * as NotificationsType from 'expo-notifications';
 import { StatusBar } from 'expo-status-bar';
+import * as SplashScreen from 'expo-splash-screen';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import {
+  useFonts,
+  Manrope_400Regular,
+  Manrope_500Medium,
+  Manrope_600SemiBold,
+  Manrope_700Bold,
+  Manrope_800ExtraBold,
+} from '@expo-google-fonts/manrope';
+import {
+  Fraunces_500Medium,
+  Fraunces_600SemiBold,
+  Fraunces_700Bold,
+  Fraunces_500Medium_Italic,
+} from '@expo-google-fonts/fraunces';
 import { BACKGROUND } from '../lib/theme';
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 // expo-notifications' native module was removed from Expo Go (SDK 53+). On
 // Android, merely *importing* the module throws synchronously (not just a
@@ -22,6 +40,24 @@ function openNotificationResult(notification: NotificationsType.Notification) {
 }
 
 function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    Manrope_400Regular,
+    Manrope_500Medium,
+    Manrope_600SemiBold,
+    Manrope_700Bold,
+    Manrope_800ExtraBold,
+    Fraunces_500Medium,
+    Fraunces_600SemiBold,
+    Fraunces_700Bold,
+    Fraunces_500Medium_Italic,
+  });
+
+  const onLayoutRootView = useCallback(() => {
+    if (fontsLoaded) {
+      SplashScreen.hideAsync().catch(() => {});
+    }
+  }, [fontsLoaded]);
+
   useEffect(() => {
     if (isExpoGo || Platform.OS === 'web') return;
     let subscription: { remove: () => void } | undefined;
@@ -56,9 +92,11 @@ function RootLayout() {
     return () => subscription?.remove();
   }, []);
 
+  if (!fontsLoaded) return null;
+
   return (
-    <SafeAreaProvider>
-      <StatusBar style="light" />
+    <SafeAreaProvider onLayout={onLayoutRootView}>
+      <StatusBar style="dark" />
       <Stack
         screenOptions={{
           headerShown: false,
