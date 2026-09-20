@@ -5,3 +5,5 @@ node_modules/
 **/__pycache__/
 *.py[cod]
 frontend/.expo/
+**/.wrangler/
+.dev.vars

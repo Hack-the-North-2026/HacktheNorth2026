@@ -17,6 +17,7 @@ from openai import OpenAI
 
 from logging_config import agent_log, garment_name
 from services.baseten_vlm import encode_image_data_uri
+from services.cropper import managed_media_path
 from services.query_normalize import canonicalize_query, unique_queries
 
 logger = logging.getLogger("fit_stealer.see_chip")
@@ -232,6 +233,7 @@ def analyze_chip(
         ],
         response_format=_CHIP_SCHEMA,
         temperature=0,
+        seed=0,
         max_tokens=800,
     )
     raw = response.choices[0].message.content
@@ -302,13 +304,7 @@ def merge_chip_into_garment(
 
 
 def _chip_path(garment: dict[str, Any]) -> Path | None:
-    chip_key = garment.get("chip_key")
-    if not chip_key or not isinstance(chip_key, str):
-        return None
-    path = Path(chip_key)
-    if not path.is_absolute() or not path.is_file():
-        return None
-    return path
+    return managed_media_path(garment.get("chip_key") if isinstance(garment.get("chip_key"), str) else None)
 
 
 def _detail_one(
@@ -374,16 +370,6 @@ def detail_garments(garments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     workers = min(MAX_WORKERS, len(garments))
     if workers == 1:
         return [_detail_one(garments[0], baseten, openai_client)]
-
-    results: list[dict[str, Any] | None] = [None] * len(garments)
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(_detail_one, garment, baseten, openai_client): index
-            for index, garment in enumerate(garments)
-        }
-        for future in as_completed(futures):
-            results[futures[future]] = future.result()
-    return [item if item is not None else dict(garments[i]) for i, item in enumerate(results)]
 
     results: list[dict[str, Any] | None] = [None] * len(garments)
     with ThreadPoolExecutor(max_workers=workers) as pool:

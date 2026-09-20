@@ -13,7 +13,7 @@ from services.composio_shopping import (  # noqa: E402
     normalize_shopping_item,
     search_composio_shopping,
 )
-from services.query_normalize import garment_catalog_queries, like_query  # noqa: E402
+from services.query_normalize import garment_catalog_queries, like_query, reformulate_garment  # noqa: E402
 from services.retrieval import (  # noqa: E402
     canonical_product_url,
     dedupe_candidates,
@@ -74,6 +74,12 @@ class QueryPlanTests(unittest.TestCase):
         self.assertEqual([job["kind"] for job in jobs], ["primary", "distinctive", "brand"])
         self.assertTrue(all(not job["use_like"] for job in jobs))
         self.assertIn("schott", jobs[2]["query"])
+
+    def test_reformulate_rotates_distinctive_query_first(self):
+        rotated = reformulate_garment(GARMENT)
+        self.assertEqual(rotated["search_query"], "silver zip hardware ribbed cuffs bomber")
+        self.assertEqual(rotated["queries"][0], "silver zip hardware ribbed cuffs bomber")
+        self.assertEqual(rotated["queries"][-1], GARMENT["queries"][0])
 
 
 class DedupeTests(unittest.TestCase):
@@ -144,7 +150,8 @@ class FanoutTests(unittest.TestCase):
             clear=False,
         ):
             result = retrieve_candidates(GARMENT, "YWJj")
-        composio.assert_called_once()
+        composio.assert_called()
+        self.assertGreaterEqual(composio.call_count, 1)
         sources = {item["source"] for item in result}
         self.assertIn("composio", sources)
         self.assertIn("shopify", sources)
@@ -162,9 +169,10 @@ class FanoutTests(unittest.TestCase):
         composio.assert_not_called()
         self.assertGreaterEqual(len(result), 4)
 
+    @patch("services.source_and_rank.browse_products", return_value=[])
     @patch("services.retrieval.search_composio_shopping", return_value=[])
     @patch("services.retrieval.search_shopify_catalog", side_effect=RuntimeError("boom"))
-    def test_shopify_exceptions_do_not_raise(self, _search, _composio):
+    def test_shopify_exceptions_do_not_raise(self, _search, _composio, _browse):
         self.assertEqual(retrieve_candidates(GARMENT, "YWJj"), [])
         self.assertEqual(source_and_rank(GARMENT, "YWJj"), [])
 

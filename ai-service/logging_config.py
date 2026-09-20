@@ -53,7 +53,8 @@ class HumanFormatter(logging.Formatter):
 
 
 def agent_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None) -> None:
-    # #region agent log
+    if os.getenv("FIT_STEALER_DEBUG_LOG") != "1":
+        return
     try:
         import json
         import time
@@ -75,7 +76,6 @@ def agent_log(hypothesis_id: str, location: str, message: str, data: dict[str, A
             )
     except Exception:
         pass
-    # #endregion
 
 
 def configure_logging() -> None:

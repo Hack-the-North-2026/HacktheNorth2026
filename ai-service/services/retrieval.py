@@ -217,11 +217,18 @@ def retrieve_candidates(
     remaining = max(0.0, budget_s - elapsed)
     should_shop = composio_configured() and (thin or mode == "always") and remaining >= 2.0
     if should_shop:
-        composio_hits = search_composio_shopping(
-            garment,
-            query=queries[0] if queries else None,
-            timeout=min(8.0, remaining),
-        )
+        shop_queries = queries[:2] or ([queries[0]] if queries else [])
+        per_timeout = min(8.0, remaining / max(1, len(shop_queries)))
+        for query in shop_queries:
+            if time.monotonic() - started >= budget_s - 1.0:
+                break
+            composio_hits.extend(
+                search_composio_shopping(
+                    garment,
+                    query=query,
+                    timeout=per_timeout,
+                )
+            )
         unique = dedupe_candidates(unique + composio_hits)
     selected = prefer_judgeable(unique)
     logger.info(

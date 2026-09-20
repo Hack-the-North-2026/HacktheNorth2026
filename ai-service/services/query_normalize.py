@@ -132,6 +132,18 @@ def garment_catalog_queries(garment: dict | None, limit: int = 3) -> list[str]:
     )
 
 
+def reformulate_garment(garment: dict | None) -> dict:
+    """Rotate queries so the distinctive/brand search runs first on a retry."""
+    out = dict(garment or {})
+    queries = garment_catalog_queries(out)
+    if len(queries) < 2:
+        return out
+    rotated = queries[1:] + queries[:1]
+    out["queries"] = rotated
+    out["search_query"] = rotated[0]
+    return out
+
+
 def like_query(garment: dict | None, primary: str = "") -> str:
     """Short color + material + category query for Shopify ``like`` search."""
     garment = garment or {}

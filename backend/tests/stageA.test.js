@@ -12,6 +12,7 @@ import {
 import {
   clearIdentifyCache,
   getCachedIdentify,
+  hammingHex,
   identifyCacheSize,
   setCachedIdentify,
 } from '../src/identifyCache.js';
@@ -44,6 +45,20 @@ test('identify cache returns a clone and is keyed by image hash', () => {
   assert.equal(again.items[0].matches[0].url, 'https://shop.example/j');
   assert.equal(getCachedIdentify('missing'), null);
   assert.equal(identifyCacheSize(), 1);
+  clearIdentifyCache();
+});
+
+test('identify cache can hit nearby pHash when sha256 misses', () => {
+  clearIdentifyCache();
+  setCachedIdentify(
+    'hash-a',
+    { outfit_summary: 'near-dupe', items: [] },
+    'ffffffffffffffff',
+  );
+  const flipped = (BigInt('0xffffffffffffffff') ^ 1n).toString(16).padStart(16, '0');
+  assert.equal(hammingHex('ffffffffffffffff', flipped), 1);
+  const hit = getCachedIdentify('different-sha', flipped);
+  assert.equal(hit.outfit_summary, 'near-dupe');
   clearIdentifyCache();
 });
 

@@ -52,13 +52,26 @@ export type Match = ProductCandidate & {
   visual_label?: 'same_item' | 'similar' | 'different';
 };
 
-export type IdentifyStatus = 'queued' | 'ingesting' | 'seeing' | 'sourcing' | 'ranking' | 'done' | 'error';
+export type IdentifyStatus =
+  | 'queued'
+  | 'ingesting'
+  | 'seeing'
+  | 'detailing'
+  | 'sourcing'
+  | 'judging'
+  | 'retrying'
+  | 'ranking'
+  | 'done'
+  | 'error';
 
 export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string> = {
   queued: 'Queuing your request…',
   ingesting: 'Preparing media…',
   seeing: 'Looking at the outfit…',
+  detailing: 'Reading each garment up close…',
   sourcing: 'Searching shops…',
+  judging: 'Comparing product photos to the crop…',
+  retrying: 'Searching the open web…',
   ranking: 'Picking the best matches…',
   done: 'Found your fit',
   error: 'Something went wrong',
@@ -76,6 +89,7 @@ export type IdentifyResult = {
     matches: Match[];
   }>;
   error?: string;
+  steps?: Array<{ status: IdentifyStatus; at: string; note?: string }>;
 };
 
 export type RecentSearch = {

@@ -1,17 +1,21 @@
 """
 Fit Stealer — AI Service (FastAPI)
-Perception tool server for the See and Crop pipeline steps.
+Perception + matching tool server.
 
-Endpoints (Stage 1):
-  POST /tools/see     — Baseten VLM → Garment[]
-  POST /tools/crop    — PIL bbox cropper → chip files
-  POST /tools/source-rank — Shopify Global Catalog → ranked matches
-  POST /api/identify  — Fallback: see + crop in one call (before orchestrator)
-  GET  /health        — Liveness probe
+Endpoints:
+  POST /tools/see         — Baseten VLM → Garment[]
+  POST /tools/crop        — PIL bbox cropper → chip files
+  POST /tools/see-chip    — Baseten close-up + OpenAI query merge
+  POST /tools/retrieve    — Shopify fan-out (+ Composio if thin)
+  POST /tools/judge       — VisualJudge chip vs product photos
+  POST /tools/browse      — Browserbase reverse-image (weak scores only)
+  POST /tools/rank        — OpenAI honesty ranker
+  POST /tools/source-rank — Combined retrieve → judge → maybe browse → rank
+  POST /api/identify      — See + crop (+ SeeChip unless detail=0)
+  GET  /health            — Liveness probe
 
 Architecture §7.2: This is a TOOL SERVER, not the product API.
-See/Crop/SeeChip are perception. /tools/source-rank fans out Shopify
-(and Composio when the catalog is thin). Express owns the job loop.
+Express / Cloudflare IdentifyAgent own the job loop and call these tools.
 """
 
 from __future__ import annotations
@@ -25,8 +29,9 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from logging_config import agent_log, bind_job, configure_logging, garment_name, job_id_var
 
@@ -38,8 +43,12 @@ load_dotenv(override=True)
 
 # Import perception services
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
-from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
+from services.cropper import crop_garments, managed_media_path, prepare_image_for_see  # noqa: E402
 from services.see_chip import detail_garments  # noqa: E402
+from services.browserbase_scraper import browse_products  # noqa: E402
+from services.product_ranker import fallback_rank_candidates, rank_candidates  # noqa: E402
+from services.retrieval import retrieve_candidates  # noqa: E402
+from services.shopify_filter import encode_chip  # noqa: E402
 from services.source_and_rank import source_and_rank  # noqa: E402
 from services.video_processor import (  # noqa: E402
     cleanup_work_dir,
@@ -49,6 +58,7 @@ from services.video_processor import (  # noqa: E402
     ALLOWED_VIDEO_EXTENSIONS,
     MAX_VIDEO_SIZE_BYTES,
 )
+from services.visual_judge import best_visual_score, judge_candidates  # noqa: E402
 
 # Shared DSN with Expo and Express (root .env SENTRY_DSN)
 _sentry_dsn = os.getenv("SENTRY_DSN") or ""
@@ -84,10 +94,23 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_TOOL_KEY = os.getenv("TOOL_SERVER_SECRET", "").strip()
+
+
+@app.middleware("http")
+async def tool_auth(request: Request, call_next):
+    if not _TOOL_KEY:
+        return await call_next(request)
+    if request.method == "OPTIONS" or request.url.path in {"/", "/health"}:
+        return await call_next(request)
+    if request.headers.get("x-tool-key") != _TOOL_KEY:
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -124,7 +147,10 @@ _CHIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 @app.on_event("startup")
 def on_startup():
-    logger.info("AI service ready — SeeScene · SeeChip · VisualJudge (Baseten) · Crop · Shopify fan-out · Composio · Rank (OpenAI) · Browserbase off")
+    logger.info(
+        "AI service ready — SeeScene · SeeChip · VisualJudge · retrieve/judge/browse/rank · "
+        "Shopify fan-out · Composio · Browserbase reverse-image"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +215,59 @@ class SeeChipResponse(BaseModel):
     garments: list[dict]
 
 
+class RetrieveRequest(BaseModel):
+    garment: dict
+    chip: Optional[ChipPayload] = None
+
+
+class RetrieveResponse(BaseModel):
+    candidates: list[dict]
+
+
+class JudgeRequest(BaseModel):
+    garment: dict
+    candidates: list[dict] = []
+    chip: Optional[ChipPayload] = None
+
+
+class JudgeResponse(BaseModel):
+    visual_scores: list[dict]
+    best: Optional[float] = None
+
+
+class BrowseRequest(BaseModel):
+    garment: dict
+    chip: Optional[ChipPayload] = None
+
+
+class BrowseResponse(BaseModel):
+    candidates: list[dict]
+
+
+class RankRequest(BaseModel):
+    garment: dict
+    candidates: list[dict] = []
+    visual_scores: Optional[list[dict]] = None
+
+
+class RankResponse(BaseModel):
+    matches: list[dict]
+
+
+def _chip_b64(body: SourceRankRequest | RetrieveRequest | JudgeRequest | BrowseRequest) -> str | None:
+    """Prefer uploaded chip bytes; fall back to a FastAPI-local chip_key path."""
+    if body.chip and body.chip.data:
+        return body.chip.data
+    key = body.garment.get("chip_key") if isinstance(body.garment, dict) else None
+    managed = managed_media_path(key if isinstance(key, str) else None)
+    if managed:
+        try:
+            return encode_chip(managed)
+        except Exception:
+            return None
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -206,6 +285,10 @@ def health_check():
             "/tools/crop",
             "/tools/ingest",
             "/tools/see-chip",
+            "/tools/retrieve",
+            "/tools/judge",
+            "/tools/browse",
+            "/tools/rank",
             "/tools/source-rank",
             "/api/identify",
             "/api/identify-video",
@@ -317,15 +400,15 @@ def tools_crop(body: CropRequest, request: Request):
       downscaled image to Crop — not the original 4K file.
     """
     bind_job(request.headers.get("x-job-id"))
-    image_path = body.image_path
-    if not Path(image_path).exists():
+    image_path = managed_media_path(body.image_path)
+    if image_path is None:
         raise HTTPException(
             status_code=400,
-            detail=f"image_path not found on this server: {image_path}",
+            detail="image_path is missing or is not a Fit Stealer upload on this server",
         )
 
     try:
-        updated = crop_garments(image_path, body.garments, str(_CHIPS_DIR))
+        updated = crop_garments(str(image_path), body.garments, str(_CHIPS_DIR))
     except Exception as e:
         logger.exception("crop — failed")
         raise HTTPException(status_code=500, detail=f"Crop error: {e}")
@@ -362,13 +445,78 @@ def tools_see_chip(body: SeeChipRequest, request: Request):
 # Stage D: 2–3 Shopify searches in parallel, Composio if thin, then VisualJudge + rank.
 # ---------------------------------------------------------------------------
 
+@app.post("/tools/retrieve", response_model=RetrieveResponse)
+def tools_retrieve(body: RetrieveRequest, request: Request):
+    """Shopify fan-out (+ Composio if thin). No ranking."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        candidates = retrieve_candidates(body.garment, _chip_b64(body))
+    except Exception:
+        logger.warning("retrieve — %s: catalog search failed", name, exc_info=True)
+        candidates = []
+    logger.info("retrieve — %s: %s candidates", name, len(candidates))
+    return RetrieveResponse(candidates=candidates)
+
+
+@app.post("/tools/judge", response_model=JudgeResponse)
+def tools_judge(body: JudgeRequest, request: Request):
+    """VisualJudge: chip vs product photos. Empty scores if vision cannot run."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        scores = judge_candidates(_chip_b64(body), body.candidates, body.garment)
+    except Exception:
+        logger.warning("judge — %s: visual compare failed", name, exc_info=True)
+        scores = []
+    best = best_visual_score(scores)
+    logger.info(
+        "judge — %s: %s scores, best %s",
+        name,
+        len(scores),
+        f"{best:.2f}" if isinstance(best, float) else "none",
+    )
+    return JudgeResponse(visual_scores=scores, best=best)
+
+
+@app.post("/tools/browse", response_model=BrowseResponse)
+def tools_browse(body: BrowseRequest, request: Request):
+    """Browserbase reverse-image / shopping extract. Empty if skipped or failed."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        candidates = browse_products(body.garment, _chip_b64(body))
+    except Exception:
+        logger.warning("browse — %s: reverse-image failed", name, exc_info=True)
+        candidates = []
+    logger.info("browse — %s: %s listings", name, len(candidates))
+    return BrowseResponse(candidates=candidates)
+
+
+@app.post("/tools/rank", response_model=RankResponse)
+def tools_rank(body: RankRequest, request: Request):
+    """OpenAI honesty ranker. Similar-only fallback if the ranker fails."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        matches = rank_candidates(
+            body.garment,
+            body.candidates,
+            visual_scores=body.visual_scores,
+        )
+    except Exception:
+        logger.warning("rank — %s: OpenAI failed, using local fallback", name, exc_info=True)
+        matches = fallback_rank_candidates(body.garment, body.candidates)
+    logger.info("rank — %s: returning %s matches", name, len(matches))
+    return RankResponse(matches=matches)
+
+
 @app.post("/tools/source-rank", response_model=SourceRankResponse)
 def tools_source_rank(body: SourceRankRequest, request: Request):
     """Return at most three exact/similar matches for one garment."""
     bind_job(request.headers.get("x-job-id"))
     name = garment_name(body.garment)
-    chip_base64 = body.chip.data if body.chip else None
-    matches = source_and_rank(body.garment, chip_base64)
+    matches = source_and_rank(body.garment, _chip_b64(body))
     logger.info("source — %s: returning %s matches", name, len(matches))
     return SourceRankResponse(matches=matches)
 
@@ -385,18 +533,14 @@ def tools_source_rank(body: SourceRankRequest, request: Request):
 @app.post("/api/identify", response_model=IdentifyResponse)
 async def api_identify(
     image: UploadFile = File(...),
+    detail: bool = Query(True),
 ):
     """
     Fallback identify — See + Crop in one call.
 
-    Accepts:
-      multipart/form-data with field `image`
-
-    Returns:
-      { garments: Garment[] (with chip_key), outfit_summary: str }
-
-    This is NOT the final pipeline. It's a demo path for before the
-    Express orchestrator wires /tools/see and /tools/crop separately.
+    Query:
+      detail=1 (default) also runs SeeChip.
+      detail=0 stops after crop so the orchestrator can expose a detailing status.
     """
     suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
     file_id = str(uuid.uuid4())
@@ -428,10 +572,11 @@ async def api_identify(
     except Exception:
         logger.exception("crop — failed, returning garments without chips")
 
-    try:
-        garments = detail_garments(garments)
-    except Exception:
-        logger.exception("see-chip — failed, using scene descriptions")
+    if detail:
+        try:
+            garments = detail_garments(garments)
+        except Exception:
+            logger.exception("see-chip — failed, using scene descriptions")
 
     return IdentifyResponse(
         garments=garments,
@@ -617,4 +762,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("AI_SERVICE_PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    host = os.getenv("AI_SERVICE_HOST", "127.0.0.1")
+    uvicorn.run("main:app", host=host, port=port, reload=True)
