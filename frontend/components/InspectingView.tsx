@@ -197,7 +197,12 @@ export const InspectingView: React.FC<InspectingViewProps> = ({
   });
   // #region agent log
   useEffect(() => {
-    fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'D',location:'InspectingView.tsx:player',message:'inspecting video player setup',data:{isVideo,uriScheme:uri?uri.slice(0,40):null,uriLooksLikeVideo:/\.(mp4|mov|webm|m4v|mkv)$/i.test((uri||'').split('?')[0]),uriIsBlob:Boolean(uri?.startsWith('blob:')),playerStatus:(player as {status?: string})?.status||null,playing:Boolean((player as {playing?: boolean})?.playing)},timestamp:Date.now()})}).catch(()=>{});
+    if (isVideo) {
+      player.loop = true;
+      player.muted = true;
+      player.play();
+    }
+    fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'D',location:'InspectingView.tsx:player',message:'inspecting video player setup',data:{isVideo,uriScheme:uri?uri.slice(0,40):null,uriLooksLikeVideo:/\.(mp4|mov|webm|m4v|mkv)$/i.test((uri||'').split('?')[0]),uriIsBlob:Boolean(uri?.startsWith('blob:')),playerStatus:(player as {status?: string})?.status||null,playing:Boolean((player as {playing?: boolean})?.playing)},timestamp:Date.now()})}).catch(()=>{});
   }, [isVideo, uri, player]);
   // #endregion
 
@@ -299,7 +304,7 @@ export const InspectingView: React.FC<InspectingViewProps> = ({
           <Animated.View style={[styles.row, { transform: [{ translateX: drift }] }]}>
             <View style={styles.cell}>
               {isVideo ? (
-                <VideoView player={player} style={styles.media} contentFit="cover" nativeControls={false} />
+                <VideoView player={player} style={styles.media} contentFit="cover" nativeControls={false} playsInline />
               ) : (
                 <Image source={{ uri }} style={styles.media} resizeMode="cover" />
               )}

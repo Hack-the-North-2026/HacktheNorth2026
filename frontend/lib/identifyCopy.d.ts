@@ -22,6 +22,7 @@ export function timeoutIdentifyCopy(mediaType: IdentifyMediaType): string;
 export function isVideoJob(
   result?: Pick<IdentifyResult, 'media_type'> | null,
   previewUri?: string | null,
+  previewMediaType?: IdentifyMediaType | null,
 ): boolean;
 
 export function isIngestEmpty(result?: IdentifyResult | null): boolean;

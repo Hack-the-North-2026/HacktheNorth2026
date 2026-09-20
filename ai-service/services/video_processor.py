@@ -49,7 +49,7 @@ FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
-MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+MAX_VIDEO_SIZE_BYTES = 256 * 1024 * 1024  # 256 MB; duration cap stays 15s
 _FFMPEG_OK: bool | None = None
 
 

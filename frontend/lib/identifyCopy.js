@@ -37,8 +37,9 @@ export function timeoutIdentifyCopy(mediaType) {
     : 'This screenshot took too long to identify. Try another screenshot.';
 }
 
-export function isVideoJob(result, previewUri) {
+export function isVideoJob(result, previewUri, previewMediaType) {
   if (result?.media_type === 'video') return true;
+  if (previewMediaType === 'video') return true;
   if (!previewUri) return false;
   const clean = previewUri.split('?')[0].toLowerCase();
   return /\.(mp4|mov|webm|m4v|mkv)$/i.test(clean);

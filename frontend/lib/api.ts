@@ -108,6 +108,7 @@ export type IdentifyUpload = {
   fileName?: string | null;
   mimeType?: string | null;
   type?: 'image' | 'video';
+  file?: Blob | File | null;
 };
 
 export function isVideoUri(uri?: string | null, mimeType?: string | null): boolean {
@@ -125,7 +126,7 @@ async function buildIdentifyForm(
   const isVideo = upload.type === 'video' || isVideoUri(upload.uri, upload.mimeType);
   const type = isVideo ? 'video' : 'image';
   const filename = uploadFilename(upload.uri, upload.fileName, upload.mimeType);
-  const blob = await readUriAsBlob(upload.uri);
+  const blob = upload.file || await readUriAsBlob(upload.uri);
   form.append(type, blob, filename);
   form.append('type', type);
   form.append('origin', origin);
@@ -175,6 +176,10 @@ async function fetchWithCandidateFallback(
   throw lastError || new Error('Failed to connect to backend server');
 }
 
+function elapsedNear30(ms: number) {
+  return ms >= 28000 && ms <= 35000;
+}
+
 export async function startIdentifyJob(
   upload: string | IdentifyUpload,
   origin: IdentifyOrigin = 'app',
@@ -185,15 +190,31 @@ export async function startIdentifyJob(
 
   const candidates = getCandidateBaseUrls();
   let lastError: unknown = null;
+  // #region agent log
+  fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'U1',location:'api.ts:startIdentifyJob',message:'upload start',data:{filename,mimeType:image.mimeType||null,uriScheme:image.uri.slice(0,40),hasNativeFile:Boolean(image.file),nativeFileBytes:image.file?image.file.size:null,candidates},timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
 
   for (const base of candidates) {
+    const attemptStarted = Date.now();
+    let stage = 'form';
+    let blobBytes: number | null = null;
+    let blobType: string | null = null;
     try {
       const form = await buildIdentifyForm(image, origin);
+      const blob = form.get(isVideoUri(image.uri, image.mimeType) ? 'video' : 'image');
+      if (blob && typeof blob === 'object' && 'size' in blob) {
+        blobBytes = Number((blob as Blob).size);
+        blobType = (blob as Blob).type || null;
+      }
+      // #region agent log
+      fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'U1',location:'api.ts:startIdentifyJob:form',message:'form built',data:{base,filename,blobBytes,blobType,usedNativeFile:Boolean(image.file),overLimit:blobBytes!=null?blobBytes>256*1024*1024:null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+      stage = 'post';
       const response = await fetchWithTimeout(`${base}/api/identify`, {
         method: 'POST',
         body: form,
         headers: { Accept: 'application/json' },
-      }, 30000);
+      }, 180000);
       cachedWorkingBaseUrl = base;
       const job = await readJson<IdentifyResult>(response);
       const short = String(job.job_id || '').replace(/-/g, '').slice(0, 8);
@@ -201,6 +222,12 @@ export async function startIdentifyJob(
       return job;
     } catch (err) {
       lastError = err;
+      const name = err instanceof Error ? err.name : 'unknown';
+      const message = err instanceof Error ? err.message : String(err);
+      const elapsedMs = Date.now() - attemptStarted;
+      // #region agent log
+      fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'U2',location:'api.ts:startIdentifyJob:catch',message:'upload attempt failed',data:{base,stage,filename,blobBytes,blobType,errorName:name,errorMessage:message,elapsedMs,likelyTimeout:name==='AbortError'||elapsedNear30(elapsedMs)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       console.warn(`[API] startIdentifyJob failed on ${base}:`, err instanceof Error ? err.message : String(err));
     }
   }

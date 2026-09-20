@@ -84,6 +84,15 @@ export function publishJobKeyframes(jobId, keyframes) {
       urls.push(`/jobs/${jobId}/frames/${urls.length}`);
       continue;
     }
+    const frameMatch = /\/jobs\/([^/]+)\/frames\/(\d+)/.exec(uri);
+    if (frameMatch) {
+      const copied = getJobFrame(frameMatch[1], frameMatch[2]);
+      if (copied) {
+        buffers.push(copied);
+        urls.push(`/jobs/${jobId}/frames/${urls.length}`);
+        continue;
+      }
+    }
     urls.push(uri);
   }
   if (buffers.length) setJobFrames(jobId, buffers);

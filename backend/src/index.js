@@ -22,7 +22,7 @@ const app = express();
 app.set('etag', false);
 const PORT = Number(process.env.BACKEND_PORT || 4000);
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000';
-const MAX_UPLOAD_BYTES = 45 * 1024 * 1024;
+const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -219,8 +219,8 @@ function identifyUpload(req, res, next) {
       return next();
     }
     if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      logger.warn('Upload rejected: file is larger than 45 MB');
-      return res.status(400).json({ error: 'File is too large (45 MB max).' });
+      logger.warn(`Upload rejected: file is larger than ${bytesLabel(MAX_UPLOAD_BYTES)}`);
+      return res.status(400).json({ error: `File is too large (${bytesLabel(MAX_UPLOAD_BYTES)} max).` });
     }
     logger.warn(`Upload rejected: ${err.message || 'could not read the file'}`);
     return res.status(400).json({ error: err.message || 'Could not read the uploaded file.' });

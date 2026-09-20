@@ -25,7 +25,8 @@ import {
   isVideoJob,
   timeoutIdentifyCopy,
 } from '../../lib/identifyCopy';
-import { getJobPreview } from '../../lib/resultStore';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { getJobPreviewRecord } from '../../lib/resultStore';
 import { Sentry, withIdentifySpan } from '../../lib/sentry';
 import { CATEGORY_LABELS, GarmentCategory, IdentifyResult, Match } from '../../lib/types';
 import {
@@ -88,14 +89,33 @@ function EmptyMatchCard({ label }: { label: string }) {
   );
 }
 
+function JobHeroVideo({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, (p) => {
+    p.loop = true;
+    p.muted = true;
+    p.play();
+  });
+
+  useEffect(() => {
+    player.loop = true;
+    player.muted = true;
+    player.play();
+    // #region agent log
+    fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'A',location:'job/[id].tsx:JobHeroVideo',message:'job hero video player',data:{uriScheme:uri.slice(0,40),playerStatus:(player as {status?: string}).status||null,playing:Boolean((player as {playing?: boolean}).playing)},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+  }, [player, uri]);
+
+  return <VideoView player={player} style={styles.thumbnail} contentFit="cover" nativeControls={false} playsInline />;
+}
+
 export default function JobScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const jobId = Array.isArray(id) ? id[0] : id;
-  const preview = jobId ? getJobPreview(jobId) : null;
+  const previewRecord = jobId ? getJobPreviewRecord(jobId) : null;
+  const preview = previewRecord?.uri ?? null;
   const [result, setResult] = useState<IdentifyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [heroIndex, setHeroIndex] = useState(0);
   const didHaptic = useRef(false);
 
   useEffect(() => {
@@ -104,7 +124,6 @@ export default function JobScreen() {
 
     setResult(null);
     setError(null);
-    setHeroIndex(0);
 
     const poll = async () => {
       try {
@@ -169,11 +188,11 @@ export default function JobScreen() {
     }
   }, [result]);
 
-  const isVideo = isVideoJob(result, preview);
+  const isVideo = isVideoJob(result, preview, previewRecord?.mediaType);
   const keyframes = result?.keyframes?.filter(Boolean) || [];
-  const selectedFrame = keyframes[Math.min(heroIndex, Math.max(keyframes.length - 1, 0))];
-  const heroUri = selectedFrame || result?.thumbnail_url || (isVideo ? null : preview);
-  const heroBranch = heroUri ? 'image' : isVideo ? 'video-placeholder' : 'empty';
+  const showVideoHero = Boolean(isVideo && preview);
+  const heroUri = showVideoHero ? null : keyframes[0] || result?.thumbnail_url || preview;
+  const heroBranch = showVideoHero ? 'video' : heroUri ? 'image' : isVideo ? 'video-placeholder' : 'empty';
   const failed = Boolean(error) || result?.status === 'error';
   const failCopy = failedIdentifyCopy(
     error || result?.error || 'Something went wrong identifying this fit. Try another screenshot or clip.',
@@ -215,10 +234,7 @@ export default function JobScreen() {
   const empty = done && totalCards === 0;
 
   // #region agent log
-  fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'A',location:'job/[id].tsx:hero',message:'job hero source selection',data:{jobId,isVideo,heroBranch,hasPreview:Boolean(preview),previewScheme:preview?preview.slice(0,32):null,previewLooksLikeVideo:preview?/\.(mp4|mov|webm|m4v|mkv)$/i.test(preview.split('?')[0]):false,heroScheme:heroUri?heroUri.slice(0,48):null,heroLen:heroUri?heroUri.length:0,thumbnailScheme:result?.thumbnail_url?String(result.thumbnail_url).slice(0,48):null,keyframeCount:keyframes.length,mediaType:result?.media_type||null,status:result?.status||null,loading,done},timestamp:Date.now()})}).catch(()=>{});
-  if (done && result) {
-    fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b5ee46'},body:JSON.stringify({sessionId:'b5ee46',runId:'post-fix',hypothesisId:'A',location:'job/[id].tsx:render',message:'job screen stray-text sources',data:{jobId,itemCount:result.items.length,sectionTitles:sections.map((s)=>s.title),hasOutfitSummary:Boolean(result.outfit_summary),willRenderDuplicateItemBlock:false,willRenderSummary:false,willRenderAccessLines:false},timestamp:Date.now()})}).catch(()=>{});
-  }
+  fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'A',location:'job/[id].tsx:hero',message:'job hero source selection',data:{jobId,isVideo,heroBranch,showVideoHero,hasPreview:Boolean(preview),previewScheme:preview?preview.slice(0,32):null,previewMediaType:previewRecord?.mediaType||null,heroScheme:heroUri?heroUri.slice(0,48):null,keyframeCount:keyframes.length,mediaType:result?.media_type||null,status:result?.status||null,loading,done},timestamp:Date.now()})}).catch(()=>{});
   // #endregion
 
   const headline = failed
@@ -237,7 +253,9 @@ export default function JobScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.heroWrap}>
-          {heroUri ? (
+          {showVideoHero ? (
+            <JobHeroVideo uri={preview} />
+          ) : heroUri ? (
             <Image
               source={{ uri: heroUri }}
               style={styles.thumbnail}
@@ -274,32 +292,6 @@ export default function JobScreen() {
             <IdentifyStatusView status={result?.status || 'queued'} />
           </View>
         )}
-
-        {keyframes.length > 1 ? (
-          <View style={styles.frameStrip}>
-            <Text style={styles.frameStripLabel}>FRAMES WE USED</Text>
-            <ScrollView
-              horizontal
-              nestedScrollEnabled
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.frameStripRow}
-            >
-              {keyframes.map((uri, index) => (
-                <Pressable
-                  key={`${uri}-${index}`}
-                  onPress={() => setHeroIndex(index)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Frame ${index + 1} of ${keyframes.length}`}
-                >
-                  <Image
-                    source={{ uri }}
-                    style={[styles.frameThumb, index === heroIndex && styles.frameThumbActive]}
-                  />
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-        ) : null}
 
         {loading && (
           <IdentifyStatusView
@@ -389,34 +381,6 @@ const styles = StyleSheet.create({
     fontSize: FS_SM,
     letterSpacing: 1.5,
     color: ACCENT,
-  },
-  frameStrip: {
-    paddingTop: 12,
-    paddingBottom: 4,
-    gap: 8,
-  },
-  frameStripLabel: {
-    marginHorizontal: 24,
-    color: '#9C9CFF',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 1.4,
-  },
-  frameStripRow: {
-    paddingHorizontal: 24,
-    gap: 8,
-  },
-  frameThumb: {
-    width: 56,
-    height: 72,
-    borderRadius: 10,
-    backgroundColor: '#12121A',
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.08)',
-  },
-  frameThumbActive: {
-    borderColor: '#C4B5FD',
-    borderWidth: 2,
   },
   heroTopScrim: {
     position: 'absolute',

@@ -60,7 +60,7 @@ export default function HomeScreen() {
     ]).start();
   };
 
-  const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
+  const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null; file?: Blob | File | null }) => {
     setUri(asset.uri);
     setScanJob(null);
     setKeyframes([]);
@@ -72,7 +72,10 @@ export default function HomeScreen() {
     setIdleVisible(false);
     try {
       const job = await startIdentifyJob(asset);
-      setJobPreview(job.job_id, asset.uri);
+      setJobPreview(job.job_id, asset.uri, {
+        mediaType: isVideoUri(asset.uri, asset.mimeType) ? 'video' : 'image',
+        mimeType: asset.mimeType,
+      });
       // #region agent log
       fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'C',location:'index.tsx:setJobPreview',message:'stored job preview uri',data:{jobId:job.job_id,uriScheme:asset.uri.slice(0,40),mimeType:asset.mimeType||null,fileName:asset.fileName||null,detectedVideo:isVideoUri(asset.uri,asset.mimeType)},timestamp:Date.now()})}).catch(()=>{});
       // #endregion
