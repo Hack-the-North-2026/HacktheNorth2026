@@ -5,3 +5,8 @@ node_modules/
 **/__pycache__/
 *.py[cod]
 frontend/.expo/
+**/.wrangler/
+.dev.vars
+ai-service/evals/golden/videos/*.mp4
+ai-service/evals/golden/videos/*.mov
+ai-service/evals/golden/videos/*.webm

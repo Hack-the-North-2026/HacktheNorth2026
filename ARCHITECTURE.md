@@ -330,7 +330,7 @@ type ProductCandidate = {
 
 type IdentifyResult = {
   job_id: string;
-  status: "queued" | "ingesting" | "seeing" | "sourcing" | "ranking" | "done" | "error";
+  status: "queued" | "ingesting" | "seeing" | "detailing" | "sourcing" | "judging" | "retrying" | "ranking" | "done" | "error";
   origin: IdentifyOrigin;
   thumbnail_url?: string;
   outfit_summary?: string; // Stage 4: scene_summary
@@ -364,14 +364,14 @@ type IdentifyResult = {
 
 Today `POST /api/process-url` is a stub. Replace it. The Expo client should not send a URL in Stage 1.
 
-**Cloudflare IdentifyAgent (`agent/`, new)** is the API we want by Stage 2–3:
+**Cloudflare IdentifyAgent (`agent/`)** is the matching-agent brain (Workers + Durable Object + KV + R2). Stage 1 still ships on Express → FastAPI; the Worker speaks the same `/api/identify` + `/jobs/:id` contract.
 
-- Durable Object per `job_id` (memory, step log, broadcast).
-- R2 `MEDIA` for frames and chips (Baseten must GET HTTPS URLs on demo day).
-- KV cache: image hash → last result (judge retries).
-- Tools: perception, Shopify MCP, Browserbase, Composio, OpenAI rank.
+- Durable Object per `job_id` (memory, step log: seeing → detailing → sourcing → judging → retrying → ranking).
+- R2 `MEDIA` for the uploaded screenshot (and later frames/chips).
+- KV `MATCH_CACHE`: `sha256` of the image → last `IdentifyResult` (repeat uploads skip tools).
+- Tools: FastAPI `/tools/see`, `/tools/see-chip`, `/tools/retrieve`, `/tools/judge`, `/tools/browse`, `/tools/rank`.
 
-Stage 1: Express may call FastAPI `/api/identify` synchronously. Stage 3: the Worker owns the loop because video is slow. Design the contract once so the overlay never cares which process is behind `/jobs`.
+Stage 1: Express may call FastAPI tools synchronously. Stage 3: the Worker owns the loop because video is slow. Design the contract once so the overlay never cares which process is behind `/jobs`.
 
 ### 7.2 Perception (`ai-service/`)
 
@@ -381,8 +381,14 @@ Tool server, not the product API.
 | --- | --- | --- |
 | `POST` | `/tools/see` | Stage 1 — `baseten_vlm.py` |
 | `POST` | `/tools/crop` | Stage 1 — PIL |
+| `POST` | `/tools/see-chip` | Stage B — chip-first Baseten |
+| `POST` | `/tools/retrieve` | Stage D/F — Shopify fan-out + Composio |
+| `POST` | `/tools/judge` | Stage C/F — VisualJudge |
+| `POST` | `/tools/browse` | Stage E/F — Browserbase when visual is weak |
+| `POST` | `/tools/rank` | Stage C/F — OpenAI honesty |
+| `POST` | `/tools/source-rank` | Combined matching fallback |
 | `POST` | `/tools/ingest` | Stage 3 — `video_processor.py` (frames from video) |
-| `POST` | `/api/identify` | Stage 1 fallback: see + crop (+ source if the agent is not up) |
+| `POST` | `/api/identify` | See + crop; `detail=0` skips SeeChip |
 | `GET` | `/health` | already exists |
 
 Stage 1 Python deps: `openai`, `pillow`, `python-dotenv`. Add `yt-dlp` / ffmpeg only in Stage 3.
@@ -413,10 +419,10 @@ Native `AccessibilityService` + bubble. Config plugin. Dev client. Talks to the 
 
 1. Judge screenshots a paused TikTok (OS), opens Fit Stealer, picks the image.
 2. Expo `POST /api/identify` multipart.
-3. API status `seeing`. Baseten VLM on the still. OpenAI emits `Garment[]`. PIL writes chips.
-4. Status `sourcing`. Shopify `search_catalog` (text + chip) per garment. Optional Composio shopping.
-5. Status `ranking`. OpenAI keeps ≤3, labels exact/similar.
-6. Expo renders cards. Judge taps a Shopify product.
+3. API status `seeing`. Baseten VLM on the still. Crop writes chips. Status `detailing` — SeeChip on each crop.
+4. Status `sourcing`. Shopify fan-out (text + chip) per garment. Optional Composio shopping.
+5. Status `judging`. VisualJudge chip vs product photos. If visual is weak, status `retrying` (Browserbase) then re-judge. Strong visual (≥ 0.82) skips the browser.
+6. Status `ranking`. OpenAI keeps ≤3, labels exact/similar. A strong exact hides weaker similars. Expo renders cards. Judge taps a Shopify product.
 
 Stage 2 replaces step 1 with: pause TikTok → tap bubble → same POST. Steps 3–6 unchanged.
 
@@ -569,7 +575,7 @@ HacktheNorth2026/
 │       ├── shopify_filter.py      # becomes catalog search
 │       ├── browserbase_scraper.py # Stage 3+
 │       └── video_processor.py     # Stage 3 ingest
-└── agent/                         # Cloudflare IdentifyAgent (contract in S1, required S2–3)
+└── agent/                         # Cloudflare IdentifyAgent (DO + KV + R2)
 ```
 
 Env (Stage 1):

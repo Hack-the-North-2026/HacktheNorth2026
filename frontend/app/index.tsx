@@ -5,7 +5,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob, getIdentifyJob, isVideoUri } from '../lib/api';
+import { IDENTIFY_POLL_DEADLINE_MS, identifyStatusCopy, timeoutIdentifyCopy } from '../lib/identifyCopy';
 import { setJobPreview } from '../lib/resultStore';
+import { IdentifyStatus } from '../lib/types';
 import { CaptureButton } from '../components/CaptureButton';
 import { InspectingView } from '../components/InspectingView';
 import { RippleTransition } from '../components/RippleTransition';
@@ -42,6 +44,10 @@ export default function HomeScreen() {
   const [uri, setUri] = useState<string | null>(null);
   const [jobDone, setJobDone] = useState(false);
   const [scanJob, setScanJob] = useState<IdentifyResult | null>(null);
+  const [keyframes, setKeyframes] = useState<string[]>([]);
+  const [jobStatus, setJobStatus] = useState<IdentifyStatus>('queued');
+  const [statusNote, setStatusNote] = useState<string | undefined>(undefined);
+  const [mediaType, setMediaType] = useState<'image' | 'video'>('image');
   const jobIdRef = useRef<string | null>(null);
   const ringFinishedRef = useRef<(() => void) | null>(null);
 
@@ -58,6 +64,10 @@ export default function HomeScreen() {
   const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
     setUri(asset.uri);
     setScanJob(null);
+    setKeyframes([]);
+    setJobStatus('queued');
+    setStatusNote(undefined);
+    setMediaType(isVideoUri(asset.uri, asset.mimeType) ? 'video' : 'image');
     setJobDone(false);
     setPhase('scanning');
     setIdleVisible(false);
@@ -66,18 +76,29 @@ export default function HomeScreen() {
       setJobPreview(job.job_id, asset.uri);
       jobIdRef.current = job.job_id;
       setScanJob(job);
+      setJobStatus(job.status);
+      if (job.media_type) setMediaType(job.media_type);
+      if (job.keyframes?.length) setKeyframes(job.keyframes);
 
       // Keep the inspecting view up until the job is actually finished —
       // starting the job only means it was accepted, not that a result exists.
       const started = Date.now();
       let latest = job;
       while (latest.status !== 'done' && latest.status !== 'error') {
-        if (Date.now() - started > POLL_DEADLINE_MS) {
-          throw new Error('This media took too long to identify. Try another clip or screenshot.');
+        const kind = latest.media_type || (isVideoUri(asset.uri, asset.mimeType) ? 'video' : 'image');
+        if (Date.now() - started > IDENTIFY_POLL_DEADLINE_MS) {
+          throw new Error(timeoutIdentifyCopy(kind));
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         latest = await getIdentifyJob(job.job_id);
         setScanJob(latest);
+        setJobStatus(latest.status);
+        const latestNote = latest.steps?.[latest.steps.length - 1]?.note;
+        if (latestNote) setStatusNote(latestNote);
+        if (latest.media_type) setMediaType(latest.media_type);
+        if (latest.keyframes && latest.keyframes.length > 0) {
+          setKeyframes(latest.keyframes);
+        }
       }
 
       // Let the progress bar's fast finish animation land before rippling away.
@@ -122,9 +143,25 @@ export default function HomeScreen() {
 
   // Opens Android Accessibility Settings so the user can enable the overlay service.
   const openAccessibilitySettings = () => {
-    Linking.openSettings().catch(() => {
-      Alert.alert('Open Settings', 'Go to Settings → Accessibility → Fit Stealer to enable the overlay.');
-    });
+    Alert.alert(
+      'Enable Fit Stealer',
+      '1. Tap "Installed apps"\n2. Tap "Fit Stealer"\n3. Turn the switch ON\n4. Tap "Allow"',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Go to Settings',
+          onPress: () => {
+            import('expo-intent-launcher').then(IntentLauncher => {
+              IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.ACCESSIBILITY_SETTINGS).catch(() => {
+                Linking.openSettings();
+              });
+            }).catch(() => {
+              Linking.openSettings();
+            });
+          }
+        }
+      ]
+    );
   };
 
   const takePhoto = async () => {
@@ -143,7 +180,7 @@ export default function HomeScreen() {
     }
   };
 
-  const isVideo = isVideoUri(uri);
+  const isVideo = mediaType === 'video' || isVideoUri(uri);
 
   return (
     <View style={styles.container}>
@@ -187,6 +224,8 @@ export default function HomeScreen() {
             onFinished={() => ringFinishedRef.current?.()}
           />
         )}
+        <Text style={styles.scanTitle}>{isVideo ? 'Analyzing video frames' : 'Identifying your fit'}</Text>
+        <Text style={styles.scanSubtitle}>{identifyStatusCopy(jobStatus, isVideo ? 'video' : 'image', statusNote)}</Text>
       </Animated.View>
 
       <RippleTransition

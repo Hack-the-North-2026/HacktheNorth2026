@@ -1,21 +1,27 @@
 """
 Fit Stealer — AI Service (FastAPI)
-Perception tool server for the See and Crop pipeline steps.
+Perception + matching tool server.
 
-Endpoints (Stage 1):
-  POST /tools/see     — Baseten VLM → Garment[]
-  POST /tools/crop    — PIL bbox cropper → chip files
-  POST /tools/source-rank — Shopify Global Catalog → ranked matches
-  POST /api/identify  — Fallback: see + crop in one call (before orchestrator)
-  GET  /health        — Liveness probe
+Endpoints:
+  POST /tools/see         — Baseten VLM → Garment[] (image upload or video-frames JSON)
+  POST /tools/crop        — PIL bbox cropper → chip files
+  POST /tools/see-chip    — Baseten close-up + OpenAI query merge
+  POST /tools/retrieve    — Shopify fan-out (+ Composio if thin)
+  POST /tools/judge       — VisualJudge chip vs product photos
+  POST /tools/browse      — Browserbase reverse-image (weak scores only)
+  POST /tools/rank        — OpenAI honesty ranker
+  POST /tools/source-rank — Combined retrieve → judge → maybe browse → rank
+  POST /api/identify      — See + crop (+ SeeChip unless detail=0)
+  POST /api/identify-video — Video ingest + crop only (Express owns SeeChip)
+  GET  /health            — Liveness probe
 
 Architecture §7.2: This is a TOOL SERVER, not the product API.
-It does not call Shopify, Composio, or the Expo app.
-The Express orchestrator (backend/) owns the pipeline loop.
+Express / Cloudflare IdentifyAgent own the job loop and call these tools.
 """
 
 from __future__ import annotations
 
+import base64
 import os
 import logging
 import tempfile
@@ -25,8 +31,9 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from logging_config import agent_log, bind_job, configure_logging, garment_name, job_id_var
 
@@ -38,16 +45,32 @@ load_dotenv(override=True)
 
 # Import perception services
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
-from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
+from services.cropper import (  # noqa: E402
+    crop_garments,
+    crop_video_garments,
+    first_chip_path,
+    managed_media_path,
+    prepare_image_for_see,
+)
+from services.see_chip import detail_garments  # noqa: E402
+from services.browserbase_scraper import browse_products  # noqa: E402
+from services.product_ranker import fallback_rank_candidates, rank_candidates  # noqa: E402
+from services.retrieval import retrieve_candidates  # noqa: E402
+from services.shopify_filter import encode_chip  # noqa: E402
 from services.source_and_rank import source_and_rank  # noqa: E402
 from services.video_processor import (  # noqa: E402
     cleanup_work_dir,
     extract_candidate_frames,
+    ffmpeg_available,
+    ingest_video_frames,
+    keyframes_from_paths,
+    persist_selected_frames,
     select_and_identify_from_video,
     validate_video,
     ALLOWED_VIDEO_EXTENSIONS,
     MAX_VIDEO_SIZE_BYTES,
 )
+from services.visual_judge import best_visual_score, judge_candidates  # noqa: E402
 
 # Shared DSN with Expo and Express (root .env SENTRY_DSN)
 _sentry_dsn = os.getenv("SENTRY_DSN") or ""
@@ -83,10 +106,26 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_TOOL_KEY = os.getenv("TOOL_SERVER_SECRET", "").strip()
+_REQUIRE_TOOL_KEY = os.getenv("NODE_ENV", "development").strip().lower() == "production"
+
+
+@app.middleware("http")
+async def tool_auth(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in {"/", "/health"}:
+        return await call_next(request)
+    if not _TOOL_KEY:
+        if _REQUIRE_TOOL_KEY:
+            return JSONResponse({"detail": "TOOL_SERVER_SECRET is required"}, status_code=503)
+        return await call_next(request)
+    if request.headers.get("x-tool-key") != _TOOL_KEY:
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -121,9 +160,37 @@ _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 _CHIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _cleanup_stale_media(max_age_s: int | None = None) -> int:
+    age = max_age_s if max_age_s is not None else int(os.getenv("CHIP_TTL_S", "7200"))
+    now = time.time()
+    removed = 0
+    for folder in (_CHIPS_DIR, _UPLOAD_DIR):
+        if not folder.is_dir():
+            continue
+        for path in folder.glob("*"):
+            try:
+                if path.is_file() and now - path.stat().st_mtime > age:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    if removed:
+        logger.info("cleanup — removed %s stale chip/upload files older than %ss", removed, age)
+    return removed
+
+
 @app.on_event("startup")
 def on_startup():
-    logger.info("AI service ready — See (Baseten) · Crop · Shopify · Rank (OpenAI) · Browserbase off")
+    if not _TOOL_KEY:
+        if _REQUIRE_TOOL_KEY:
+            logger.error("TOOL_SERVER_SECRET is required in production")
+        else:
+            logger.warning("TOOL_SERVER_SECRET is unset — /tools/* are open on this process")
+    _cleanup_stale_media()
+    logger.info(
+        "AI service ready — SeeScene · SeeChip · VisualJudge · retrieve/judge/browse/rank · "
+        "Shopify fan-out · Composio · Browserbase reverse-image"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +209,20 @@ class CropResponse(BaseModel):
 class SeeResponse(BaseModel):
     garments: list[dict]
     outfit_summary: str
-    image_path: str
+    image_path: str = ""
+
+
+class SeeFrameBytes(BaseModel):
+    data: str
+    index: int = 0
+    timestamp: float = 0
+    sharpness: float = 0
+
+
+class SeeFramesRequest(BaseModel):
+    image_paths: list[str] = []
+    frame_metadata: list[dict] = []
+    frames: list[SeeFrameBytes] = []
 
 
 class IdentifyResponse(BaseModel):
@@ -165,11 +245,23 @@ class SourceRankResponse(BaseModel):
     matches: list[dict]
 
 
+class IngestFrame(BaseModel):
+    path: str
+    timestamp: float = 0
+    sharpness: float = 0
+    index: int = 0
+
+
 class IngestResponse(BaseModel):
-    garments: list[dict]
-    outfit_summary: str
+    garments: list[dict] = []
+    outfit_summary: str = ""
     frame_count: int
     selected_frames: int
+    image_paths: list[str] = []
+    frames: list[IngestFrame] = []
+    keyframes: list[str] = []
+    work_dir: Optional[str] = None
+    duration: Optional[float] = None
 
 
 class IdentifyVideoResponse(BaseModel):
@@ -178,6 +270,70 @@ class IdentifyVideoResponse(BaseModel):
     frame_count: int
     image_path: Optional[str] = None
     keyframes: list[str] = []
+    duration: Optional[float] = None
+    empty_reason: Optional[str] = None
+    selected_frames: Optional[int] = None
+
+
+class SeeChipRequest(BaseModel):
+    garments: list[dict]
+
+
+class SeeChipResponse(BaseModel):
+    garments: list[dict]
+
+
+class RetrieveRequest(BaseModel):
+    garment: dict
+    chip: Optional[ChipPayload] = None
+
+
+class RetrieveResponse(BaseModel):
+    candidates: list[dict]
+
+
+class JudgeRequest(BaseModel):
+    garment: dict
+    candidates: list[dict] = []
+    chip: Optional[ChipPayload] = None
+
+
+class JudgeResponse(BaseModel):
+    visual_scores: list[dict]
+    best: Optional[float] = None
+
+
+class BrowseRequest(BaseModel):
+    garment: dict
+    chip: Optional[ChipPayload] = None
+
+
+class BrowseResponse(BaseModel):
+    candidates: list[dict]
+
+
+class RankRequest(BaseModel):
+    garment: dict
+    candidates: list[dict] = []
+    visual_scores: Optional[list[dict]] = None
+
+
+class RankResponse(BaseModel):
+    matches: list[dict]
+
+
+def _chip_b64(body: SourceRankRequest | RetrieveRequest | JudgeRequest | BrowseRequest) -> str | None:
+    """Prefer uploaded chip bytes; fall back to chip_key, then video alt_chip_key."""
+    if body.chip and body.chip.data:
+        return body.chip.data
+    garment = body.garment if isinstance(body.garment, dict) else {}
+    managed = first_chip_path(garment)
+    if managed:
+        try:
+            return encode_chip(managed)
+        except Exception:
+            return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -192,10 +348,17 @@ def health_check():
         "service": "Fit Stealer AI Service",
         "version": "0.3.0",
         "sentry": "ok" if _sentry_dsn else "unconfigured",
+        "ffmpeg": "ok" if ffmpeg_available() else "missing",
+        "tool_auth": "required" if _TOOL_KEY or _REQUIRE_TOOL_KEY else "open",
         "endpoints": [
             "/tools/see",
             "/tools/crop",
             "/tools/ingest",
+            "/tools/see-chip",
+            "/tools/retrieve",
+            "/tools/judge",
+            "/tools/browse",
+            "/tools/rank",
             "/tools/source-rank",
             "/api/identify",
             "/api/identify-video",
@@ -227,22 +390,104 @@ def _find_image_file(target: str) -> Path | None:
     return None
 
 
+def _crop_video_garments(garments: list[dict], frames: list[dict]) -> list[dict]:
+    """Crop each garment from the frame named by source_frame_index."""
+    return crop_video_garments(garments, frames, str(_CHIPS_DIR))
+
+
+def _write_see_frame_bytes(uploaded: list[SeeFrameBytes]) -> list[dict]:
+    frames = []
+    for item in uploaded:
+        try:
+            raw = base64.b64decode(item.data, validate=False)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid frame bytes: {exc}") from exc
+        if not raw:
+            continue
+        dest = _CHIPS_DIR / f"{uuid.uuid4()}_see_frame_{int(item.index):04d}.jpg"
+        dest.write_bytes(raw)
+        frames.append({
+            "path": str(dest.resolve()),
+            "timestamp": item.timestamp,
+            "sharpness": item.sharpness,
+            "index": item.index,
+        })
+    return frames
+
+
+def _see_video_frames(
+    image_paths: list[str],
+    frame_metadata: list[dict],
+    uploaded_frames: list[SeeFrameBytes] | None = None,
+) -> SeeResponse:
+    frames = []
+    resolved_paths = []
+    if uploaded_frames:
+        frames = _write_see_frame_bytes(uploaded_frames)
+        resolved_paths = [frame["path"] for frame in frames]
+    if not resolved_paths:
+        for i, raw in enumerate(image_paths):
+            managed = managed_media_path(raw)
+            if managed is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="image_paths must be Fit Stealer frame files on this server",
+                )
+            path = str(managed)
+            resolved_paths.append(path)
+            meta = frame_metadata[i] if i < len(frame_metadata) else {}
+            frames.append({
+                "path": path,
+                "timestamp": meta.get("timestamp", 0),
+                "sharpness": meta.get("sharpness", 0),
+                "index": meta.get("index", i),
+            })
+    if not resolved_paths:
+        raise HTTPException(status_code=400, detail="image_paths or frames is required")
+
+    try:
+        result = analyze_frames_with_vlm(resolved_paths, frame_metadata=frames)
+    except ValueError as e:
+        logger.warning("see — bad request: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("see — Baseten failed")
+        raise HTTPException(status_code=502, detail=f"Baseten error: {e}")
+
+    garments = _crop_video_garments(result.get("garments", []), frames)
+    return SeeResponse(
+        garments=garments,
+        outfit_summary=result.get("outfit_summary", ""),
+        image_path=resolved_paths[0] if resolved_paths else "",
+    )
+
+
 @app.post("/tools/see", response_model=SeeResponse)
-async def tools_see(
-    image: Optional[UploadFile] = File(default=None),
-):
+async def tools_see(request: Request):
     """
-    See step — send one image to Baseten VLM, get back Garment[].
+    See step — Baseten VLM → Garment[].
 
     Accepts:
-      - multipart/form-data with field `image` (preferred, from Dev 2)
+      - multipart/form-data with field `image` (screenshot)
+      - application/json { image_paths, frame_metadata } (video frames from /tools/ingest)
       - Falls back to TEST_IMAGE_PATH env var for Phase 1 local testing
-
-    Returns:
-      { garments: [...], outfit_summary: "..." }
     """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        payload = SeeFramesRequest.model_validate(await request.json())
+        if not payload.image_paths and not payload.frames:
+            raise HTTPException(status_code=400, detail="image_paths or frames is required")
+        return _see_video_frames(payload.image_paths, payload.frame_metadata, payload.frames)
+
+    image = None
+    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        uploaded = form.get("image")
+        if uploaded is not None and hasattr(uploaded, "read"):
+            image = uploaded
+
     if image is not None:
-        suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
+        suffix = Path(getattr(image, "filename", None) or "upload.jpg").suffix or ".jpg"
         file_id = str(uuid.uuid4())
         if not job_id_var.get():
             bind_job(file_id)
@@ -307,15 +552,15 @@ def tools_crop(body: CropRequest, request: Request):
       downscaled image to Crop — not the original 4K file.
     """
     bind_job(request.headers.get("x-job-id"))
-    image_path = body.image_path
-    if not Path(image_path).exists():
+    image_path = managed_media_path(body.image_path)
+    if image_path is None:
         raise HTTPException(
             status_code=400,
-            detail=f"image_path not found on this server: {image_path}",
+            detail="image_path is missing or is not a Fit Stealer upload on this server",
         )
 
     try:
-        updated = crop_garments(image_path, body.garments, str(_CHIPS_DIR))
+        updated = crop_garments(str(image_path), body.garments, str(_CHIPS_DIR))
     except Exception as e:
         logger.exception("crop — failed")
         raise HTTPException(status_code=500, detail=f"Crop error: {e}")
@@ -324,18 +569,113 @@ def tools_crop(body: CropRequest, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# POST /tools/see-chip
+# Accepts JSON { garments[] } with chip_key paths from /tools/crop.
+# Second Baseten pass on each crop, OpenAI merge of queries/attributes.
+# ---------------------------------------------------------------------------
+
+@app.post("/tools/see-chip", response_model=SeeChipResponse)
+def tools_see_chip(body: SeeChipRequest, request: Request):
+    """Chip-first See — overwrite scene copy with close-up garment details."""
+    bind_job(request.headers.get("x-job-id"))
+    if not body.garments:
+        return SeeChipResponse(garments=[])
+    try:
+        updated = detail_garments(body.garments)
+    except ValueError as e:
+        logger.warning("see-chip — bad request: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("see-chip — failed")
+        raise HTTPException(status_code=502, detail=f"SeeChip error: {e}")
+    return SeeChipResponse(garments=updated)
+
+
+# ---------------------------------------------------------------------------
 # POST /tools/source-rank
 # Accepts Dev 2's JSON { garment, chip?: { content_type, data } }.
-# Runs Shopify Global Catalog sourcing followed by the OpenAI ranker.
+# Stage D: 2–3 Shopify searches in parallel, Composio if thin, then VisualJudge + rank.
 # ---------------------------------------------------------------------------
+
+@app.post("/tools/retrieve", response_model=RetrieveResponse)
+def tools_retrieve(body: RetrieveRequest, request: Request):
+    """Shopify fan-out (+ Composio if thin). No ranking."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        chip = _chip_b64(body)
+        candidates = retrieve_candidates(body.garment, chip)
+    except Exception:
+        logger.warning("retrieve — %s: catalog search failed", name, exc_info=True)
+        candidates = []
+        chip = None
+    logger.info(
+        "retrieve — %s: %s candidates (%s)",
+        name,
+        len(candidates),
+        "chip like on" if chip else "text only",
+    )
+    return RetrieveResponse(candidates=candidates)
+
+
+@app.post("/tools/judge", response_model=JudgeResponse)
+def tools_judge(body: JudgeRequest, request: Request):
+    """VisualJudge: chip vs product photos. Empty scores if vision cannot run."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        scores = judge_candidates(_chip_b64(body), body.candidates, body.garment)
+    except Exception:
+        logger.warning("judge — %s: visual compare failed", name, exc_info=True)
+        scores = []
+    best = best_visual_score(scores)
+    logger.info(
+        "judge — %s: %s scores, best %s",
+        name,
+        len(scores),
+        f"{best:.2f}" if isinstance(best, float) else "none",
+    )
+    return JudgeResponse(visual_scores=scores, best=best)
+
+
+@app.post("/tools/browse", response_model=BrowseResponse)
+def tools_browse(body: BrowseRequest, request: Request):
+    """Browserbase reverse-image / shopping extract. Empty if skipped or failed."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        candidates = browse_products(body.garment, _chip_b64(body))
+    except Exception:
+        logger.warning("browse — %s: reverse-image failed", name, exc_info=True)
+        candidates = []
+    logger.info("browse — %s: %s listings", name, len(candidates))
+    return BrowseResponse(candidates=candidates)
+
+
+@app.post("/tools/rank", response_model=RankResponse)
+def tools_rank(body: RankRequest, request: Request):
+    """OpenAI honesty ranker. Similar-only fallback if the ranker fails."""
+    bind_job(request.headers.get("x-job-id"))
+    name = garment_name(body.garment)
+    try:
+        matches = rank_candidates(
+            body.garment,
+            body.candidates,
+            visual_scores=body.visual_scores,
+        )
+    except Exception:
+        logger.warning("rank — %s: OpenAI failed, using local fallback", name, exc_info=True)
+        matches = fallback_rank_candidates(body.garment, body.candidates)
+    logger.info("rank — %s: returning %s matches", name, len(matches))
+    return RankResponse(matches=matches)
+
 
 @app.post("/tools/source-rank", response_model=SourceRankResponse)
 def tools_source_rank(body: SourceRankRequest, request: Request):
     """Return at most three exact/similar matches for one garment."""
     bind_job(request.headers.get("x-job-id"))
     name = garment_name(body.garment)
-    chip_base64 = body.chip.data if body.chip else None
-    matches = source_and_rank(body.garment, chip_base64)
+    matches = source_and_rank(body.garment, _chip_b64(body))
     logger.info("source — %s: returning %s matches", name, len(matches))
     return SourceRankResponse(matches=matches)
 
@@ -352,18 +692,14 @@ def tools_source_rank(body: SourceRankRequest, request: Request):
 @app.post("/api/identify", response_model=IdentifyResponse)
 async def api_identify(
     image: UploadFile = File(...),
+    detail: bool = Query(True),
 ):
     """
     Fallback identify — See + Crop in one call.
 
-    Accepts:
-      multipart/form-data with field `image`
-
-    Returns:
-      { garments: Garment[] (with chip_key), outfit_summary: str }
-
-    This is NOT the final pipeline. It's a demo path for before the
-    Express orchestrator wires /tools/see and /tools/crop separately.
+    Query:
+      detail=1 (default) also runs SeeChip.
+      detail=0 stops after crop so the orchestrator can expose a detailing status.
     """
     suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
     file_id = str(uuid.uuid4())
@@ -395,6 +731,12 @@ async def api_identify(
     except Exception:
         logger.exception("crop — failed, returning garments without chips")
 
+    if detail:
+        try:
+            garments = detail_garments(garments)
+        except Exception:
+            logger.exception("see-chip — failed, using scene descriptions")
+
     return IdentifyResponse(
         garments=garments,
         outfit_summary=outfit_summary,
@@ -413,13 +755,16 @@ async def tools_ingest(
     video: UploadFile = File(...),
 ):
     """
-    Ingest step (Stage 3) — extract keyframes from video, run VLM.
+    Ingest step (Stage V1) — ffmpeg + visibility pick. No VLM garments.
+
+    Copies kept frames into fit-stealer-chips, then deletes the work dir.
+    Express calls /tools/see with those paths during `seeing`.
 
     Accepts:
       multipart/form-data with field `video` (.mp4, .mov, .webm)
 
     Returns:
-      { garments: Garment[], outfit_summary: str, frame_count: int, selected_frames: int }
+      { frame_count, selected_frames, image_paths, frames, keyframes }
     """
     suffix = Path(video.filename or "upload.mp4").suffix.lower() or ".mp4"
     if suffix not in ALLOWED_VIDEO_EXTENSIONS:
@@ -444,8 +789,24 @@ async def tools_ingest(
     video_path.write_bytes(content)
     logger.info("ingest — saved uploaded video (%s, %.1f MB)", suffix, len(content) / 1024 / 1024)
 
+    work_dir = ""
     try:
-        result = select_and_identify_from_video(str(video_path))
+        result = ingest_video_frames(str(video_path))
+        work_dir = result.get("candidate_dir", "")
+        frames = persist_selected_frames(result.get("frames") or [], str(_CHIPS_DIR), file_id)
+        image_paths = [frame["path"] for frame in frames]
+
+        _cleanup_stale_media()
+        return IngestResponse(
+            garments=[],
+            outfit_summary=result.get("outfit_summary", ""),
+            frame_count=result.get("frame_count", 0),
+            selected_frames=len(frames),
+            image_paths=image_paths,
+            frames=frames,
+            keyframes=keyframes_from_paths(image_paths) or result.get("keyframes") or [],
+            duration=result.get("duration"),
+        )
     except ValueError as e:
         logger.warning("ingest — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -456,23 +817,12 @@ async def tools_ingest(
         logger.exception("ingest — failed")
         raise HTTPException(status_code=502, detail=f"Video processing error: {e}")
     finally:
-        # Clean up uploaded video
         try:
             video_path.unlink(missing_ok=True)
         except OSError:
             pass
-
-    # Clean up working directory
-    work_dir = result.get("candidate_dir", "")
-    if work_dir:
-        cleanup_work_dir(work_dir)
-
-    return IngestResponse(
-        garments=result.get("garments", []),
-        outfit_summary=result.get("outfit_summary", ""),
-        frame_count=result.get("frame_count", 0),
-        selected_frames=result.get("selected_frames", 0),
-    )
+        if work_dir:
+            cleanup_work_dir(work_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -484,9 +834,13 @@ async def tools_ingest(
 @app.post("/api/identify-video", response_model=IdentifyVideoResponse)
 async def api_identify_video(
     video: UploadFile = File(...),
+    detail: bool = Query(False),
 ):
     """
     Stage 3 convenience — video ingest + crop in one call.
+
+    Express owns SeeChip (`POST /tools/see-chip`) so this never calls
+    `detail_garments`, even if `detail=1` is passed. `detail=0` is the contract.
 
     Accepts:
       multipart/form-data with field `video`
@@ -494,6 +848,8 @@ async def api_identify_video(
     Returns:
       { garments: Garment[] (with chip_key), outfit_summary: str, frame_count: int }
     """
+    if detail:
+        logger.warning("identify-video — detail=1 ignored; Express owns SeeChip")
     suffix = Path(video.filename or "upload.mp4").suffix.lower() or ".mp4"
     if suffix not in ALLOWED_VIDEO_EXTENSIONS:
         raise HTTPException(
@@ -523,32 +879,17 @@ async def api_identify_video(
         garments = result.get("garments", [])
         outfit_summary = result.get("outfit_summary", "")
         frame_count = result.get("frame_count", 0)
-
-        # Crop chips from the best source frame for each garment
-        representative_frame = None
-        if work_dir:
-            candidate_dir = os.path.join(work_dir, "candidates")
-            candidate_files = sorted(Path(candidate_dir).glob("candidate_*.jpg"))
-            if candidate_files:
-                representative_frame = candidate_files[0]
-            for g in garments:
-                src_idx = g.get("source_frame_index")
-                if src_idx is not None and 0 <= src_idx < len(candidate_files):
-                    frame_path = str(candidate_files[src_idx])
-                    if representative_frame is None or representative_frame == candidate_files[0]:
-                        representative_frame = candidate_files[src_idx]
-                    try:
-                        cropped = crop_garments(frame_path, [g], str(_CHIPS_DIR))
-                        if cropped:
-                            g.update(cropped[0])
-                    except Exception:
-                        logger.debug("crop — failed for garment %s", g.get("id"))
+        frames = persist_selected_frames(result.get("frames") or [], str(_CHIPS_DIR), file_id)
+        garments = _crop_video_garments(garments, frames)
+        result["keyframes"] = keyframes_from_paths([frame["path"] for frame in frames]) or result.get("keyframes", [])
 
         image_path = None
-        if representative_frame and representative_frame.exists():
-            thumb_dest = _CHIPS_DIR / f"thumb_{file_id}.jpg"
-            thumb_dest.write_bytes(representative_frame.read_bytes())
-            image_path = str(thumb_dest)
+        if frames:
+            thumb_src = Path(frames[0]["path"])
+            if thumb_src.exists():
+                thumb_dest = _CHIPS_DIR / f"thumb_{file_id}.jpg"
+                thumb_dest.write_bytes(thumb_src.read_bytes())
+                image_path = str(thumb_dest)
     except ValueError as e:
         logger.warning("identify-video — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -563,12 +904,21 @@ async def api_identify_video(
         if work_dir:
             cleanup_work_dir(work_dir)
 
+    empty_reason = None
+    if not frames:
+        empty_reason = "ingest"
+    elif not garments:
+        empty_reason = "see"
+
     return IdentifyVideoResponse(
         garments=garments,
         outfit_summary=outfit_summary,
         frame_count=frame_count,
         image_path=image_path,
         keyframes=result.get("keyframes", []),
+        duration=result.get("duration"),
+        empty_reason=empty_reason,
+        selected_frames=len(frames),
     )
 
 
@@ -579,4 +929,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("AI_SERVICE_PORT", 8000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)
+    host = os.getenv("AI_SERVICE_HOST", "127.0.0.1")
+    uvicorn.run("main:app", host=host, port=port, reload=True)

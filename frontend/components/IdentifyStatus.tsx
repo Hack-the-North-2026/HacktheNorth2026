@@ -2,11 +2,30 @@ import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { IDENTIFY_STATUS_COPY, IdentifyStatus } from '../lib/types';
 import { ACCENT, TEXT_PRIMARY, SURFACE_MUTED, BORDER, FONT_SEMIBOLD, FS_MD } from '../lib/theme';
+import { identifyStatusCopy } from '../lib/identifyCopy';
+import { IdentifyStatus } from '../lib/types';
 
-const STEPS: IdentifyStatus[] = ['queued', 'ingesting', 'seeing', 'sourcing', 'ranking'];
+const STEPS: IdentifyStatus[] = [
+  'queued',
+  'ingesting',
+  'seeing',
+  'detailing',
+  'sourcing',
+  'judging',
+  'ranking',
+];
 
-export function IdentifyStatusView({ status }: { status: IdentifyStatus }) {
-  const currentIndex = Math.max(0, STEPS.indexOf(status));
+export function IdentifyStatusView({
+  status,
+  mediaType = 'image',
+  note,
+}: {
+  status: IdentifyStatus;
+  mediaType?: 'image' | 'video';
+  note?: string;
+}) {
+  const progressStatus = status === 'retrying' ? 'judging' : status;
+  const currentIndex = Math.max(0, STEPS.indexOf(progressStatus));
 
   return (
     <View style={styles.wrap}>

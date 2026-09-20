@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+import requests
+
 
 AI_SERVICE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(AI_SERVICE))
@@ -69,6 +71,7 @@ class ShopifyTests(unittest.TestCase):
         self.assertEqual(catalog["query"], GARMENT["search_query"])
         self.assertEqual(catalog["like"][0]["image"]["data"], "YWJj")
         self.assertEqual(catalog["context"]["currency"], "CAD")
+        self.assertEqual(catalog["pagination"]["limit"], 10)
 
     def test_normalizes_real_catalog_variant_shape(self):
         candidate = normalize_product(
@@ -96,11 +99,33 @@ class ShopifyTests(unittest.TestCase):
     def test_protocol_error_is_recoverable(self):
         response = Mock()
         response.raise_for_status.return_value = None
-        response.json.return_value = {"error": {"message": "rate limited"}}
+        response.json.return_value = {"error": {"message": "invalid profile"}}
         session = Mock()
         session.post.return_value = response
         with self.assertRaises(ShopifyCatalogError):
             search_shopify_catalog(GARMENT, session=session)
+
+    @patch("services.shopify_filter.time.sleep")
+    def test_http_429_retries_once(self, sleep):
+        limited = Mock()
+        limited.raise_for_status.side_effect = requests.HTTPError("429 Too Many Requests")
+        recovered = Mock()
+        recovered.raise_for_status.return_value = None
+        recovered.json.return_value = {
+            "result": {
+                "structuredContent": {
+                    "products": [
+                        {"title": "Recovered After 429", "url": "https://shop.example/recovered-429"}
+                    ]
+                }
+            }
+        }
+        session = Mock()
+        session.post.side_effect = [limited, recovered]
+        result = search_shopify_catalog(GARMENT, session=session)
+        self.assertEqual(result[0]["title"], "Recovered After 429")
+        self.assertEqual(session.post.call_count, 2)
+        sleep.assert_called_once()
 
     @patch("services.shopify_filter.time.sleep")
     def test_transient_catalog_error_retries_once(self, sleep):
@@ -157,6 +182,9 @@ class RankerTests(unittest.TestCase):
         self.assertEqual(result[0]["url"], candidate["url"])
         self.assertEqual(result[0]["match_type"], "similar")
         self.assertEqual(len(result), 1)
+        kwargs = fake_client.chat.completions.create.call_args.kwargs
+        self.assertEqual(kwargs["temperature"], 0)
+        self.assertEqual(kwargs["seed"], 0)
 
     def test_fallback_never_claims_exact(self):
         candidates = [
@@ -169,19 +197,25 @@ class RankerTests(unittest.TestCase):
         result = fallback_rank_candidates(GARMENT, candidates)
         self.assertEqual(result[0]["match_type"], "similar")
 
-    @patch("services.source_and_rank.search_shopify_catalog")
-    def test_shopify_failure_does_not_crash_outfit(self, search):
+    @patch("services.source_and_rank.browse_products", return_value=[])
+    @patch("services.retrieval.search_shopify_catalog")
+    def test_shopify_failure_does_not_crash_outfit(self, search, _browse):
         search.side_effect = ShopifyCatalogError("timeout")
         self.assertEqual(source_and_rank(GARMENT), [])
 
+    @patch("services.source_and_rank.browse_products", return_value=[])
     @patch("services.source_and_rank.rank_candidates")
-    @patch("services.source_and_rank.search_shopify_catalog")
-    def test_accepts_large_base64_without_treating_it_as_a_path(self, search, rank):
+    @patch("services.retrieval.search_shopify_catalog")
+    def test_accepts_large_base64_without_treating_it_as_a_path(self, search, rank, _browse):
         encoded = "Y" * 5000
         search.return_value = []
         rank.return_value = []
         self.assertEqual(source_and_rank(GARMENT, encoded), [])
-        self.assertEqual(search.call_args.args[1], encoded)
+        chip_args = []
+        for call in search.call_args_list:
+            args, kwargs = call
+            chip_args.append(args[1] if len(args) > 1 else kwargs.get("chip_base64"))
+        self.assertIn(encoded, chip_args)
 
 
 class SourceRankEndpointTests(unittest.TestCase):

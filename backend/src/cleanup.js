@@ -20,6 +20,13 @@ export function collectTempPaths(result = {}) {
   if (isManagedTempPath(imagePath)) paths.push(imagePath);
   for (const garment of garments || []) {
     if (isManagedTempPath(garment?.chip_key)) paths.push(garment.chip_key);
+    if (isManagedTempPath(garment?.alt_chip_key)) paths.push(garment.alt_chip_key);
+  }
+  for (const framePath of result.image_paths || []) {
+    if (isManagedTempPath(framePath)) paths.push(framePath);
+  }
+  for (const frame of result.frames || []) {
+    if (isManagedTempPath(frame?.path)) paths.push(frame.path);
   }
   return [...new Set(paths)];
 }
@@ -40,11 +47,19 @@ export async function deleteTempPaths(filePaths) {
 export function scrubChipKeys(items) {
   return (items || []).map((item) => {
     const garment = item?.garment;
-    if (!garment || !isManagedTempPath(garment.chip_key)) return item;
-    return {
-      ...item,
-      garment: { ...garment, chip_key: garment.id || '' },
-    };
+    if (!garment) return item;
+    const next = { ...garment };
+    let changed = false;
+    if (isManagedTempPath(garment.chip_key)) {
+      next.chip_key = garment.id || '';
+      changed = true;
+    }
+    if (isManagedTempPath(garment.alt_chip_key)) {
+      next.alt_chip_key = '';
+      changed = true;
+    }
+    if (!changed) return item;
+    return { ...item, garment: next };
   });
 }
 

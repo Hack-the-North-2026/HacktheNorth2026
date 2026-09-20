@@ -35,14 +35,17 @@ export type Garment = {
   category: GarmentCategory;
   description: string;
   search_query: string;
+  queries?: string[];
   attributes: { color: string; material?: string; pattern?: string; fit?: string };
   brand: string | null;
   brand_cues: string[];
   confidence: number;
   bbox: [number, number, number, number];
   chip_key: string;
+  alt_chip_key?: string;
   accessibility_line: string;
   source_frame_index?: number | null;
+  crop_fallback?: boolean;
 };
 
 export type ProductCandidate = {
@@ -60,32 +63,39 @@ export type Match = ProductCandidate & {
   match_type: 'exact' | 'similar';
   confidence: number;
   reason: string;
+  visual_score?: number;
+  visual_label?: 'same_item' | 'similar' | 'different';
 };
 
-export type IdentifyStatus = 'queued' | 'ingesting' | 'seeing' | 'sourcing' | 'ranking' | 'done' | 'error';
+export type IdentifyStatus =
+  | 'queued'
+  | 'ingesting'
+  | 'seeing'
+  | 'detailing'
+  | 'sourcing'
+  | 'judging'
+  | 'retrying'
+  | 'ranking'
+  | 'done'
+  | 'error';
 
-export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string> = {
-  queued: 'Queuing your request…',
-  ingesting: 'Preparing media…',
-  seeing: 'Looking at the outfit…',
-  sourcing: 'Searching shops…',
-  ranking: 'Picking the best matches…',
-  done: 'Found your fit',
-  error: 'Something went wrong',
-};
+export { IDENTIFY_STATUS_COPY } from './identifyCopy';
 
 export type IdentifyResult = {
   job_id: string;
   status: IdentifyStatus;
   origin: IdentifyOrigin;
+  media_type?: 'image' | 'video';
   thumbnail_url?: string;
   keyframes?: string[];
+  empty_reason?: 'ingest' | 'see';
   outfit_summary?: string;
   items: Array<{
     garment: Garment;
     matches: Match[];
   }>;
   error?: string;
+  steps?: Array<{ status: IdentifyStatus; at: string; note?: string }>;
 };
 
 export type RecentSearch = {
