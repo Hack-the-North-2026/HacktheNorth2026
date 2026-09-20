@@ -2,8 +2,12 @@
 Video Processor — Stage 3 Ingest
 
 Two-tier keyframe extraction pipeline:
-  Tier 1 (local, fast): ffmpeg frame extraction → PIL sharpness scoring → top candidates
-  Tier 2 (VLM):         Baseten selects best outfit frames + identifies garments in one call
+  Tier 1 (local, fast): ffmpeg sampling → downscale → sharpness/brightness
+                        vetting → evenly-spread coverage-window selection.
+                        This tier decides *which* frames are clear enough
+                        and where they come from in the clip.
+  Tier 2 (VLM):         Baseten identifies garments across the already-vetted
+                        frames and merges duplicates seen in more than one.
 
 Architecture contract (§4 Stage 3, §7.2):
   POST /tools/ingest accepts { type: "video" } multipart
@@ -14,7 +18,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 import shutil
 import subprocess
@@ -32,12 +35,14 @@ logger = logging.getLogger("fit_stealer.ingest")
 # Constants
 # ---------------------------------------------------------------------------
 MAX_DURATION_S = 15          # Reject videos longer than this
-SAMPLE_FPS = 1               # Extract 1 frame per second
-MAX_CANDIDATES = 8           # Send at most this many to VLM
-MIN_SHARPNESS = 50.0         # Drop frames blurrier than this
+SAMPLE_FPS = 4               # Extract 4 frames/sec — dense enough that each
+                              # coverage window (see below) has real choices,
+                              # not just whatever one frame landed on the second.
+MAX_CANDIDATES = 5           # Send at most this many to the VLM (§4 Stage 3: 3-5 keyframes)
+MIN_SHARPNESS = 50.0         # Drop frames blurrier than this — the actual
+                              # "is this clear enough to search with" gate.
 MIN_MEAN_PIXEL = 15          # Drop near-black frames
 MAX_MEAN_PIXEL = 245         # Drop near-white frames
-TEMPORAL_BUCKET_S = 1.5      # Keep only the sharpest frame per bucket
 FRAME_LONG_EDGE = 768        # Downscale candidates for fast transfer
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
@@ -241,24 +246,37 @@ def extract_candidate_frames(
     video_path: str,
     max_candidates: int = MAX_CANDIDATES,
     work_dir: str | None = None,
+    duration_s: float | None = None,
 ) -> tuple[list[CandidateFrame], str]:
     """
-    Tier 1: Extract and score candidate frames from a video.
+    Tier 1: Extract, vet, and select candidate frames from a video.
 
-    1. ffmpeg extracts 1 frame/sec as JPEGs
-    2. Score each for sharpness (Laplacian variance)
-    3. Drop dark/white/blurry frames
-    4. Temporal bucketing: keep sharpest per 1.5s window
-    5. Return top N candidates sorted by timestamp
+    1. ffmpeg samples at SAMPLE_FPS as JPEGs
+    2. Downscale each frame first (cheap), then score sharpness + brightness
+       on the downscaled copy — this is both faster and gives thresholds
+       that mean the same thing regardless of the source video's resolution.
+    3. Vet: drop any frame that isn't clear enough to search with (too
+       blurry, too dark, too bright). This is a real gate, not a suggestion —
+       if nothing in the clip passes, we return no candidates rather than
+       forwarding a frame we already know is bad to the (expensive) VLM call.
+    4. Coverage windows: split the clip into `max_candidates` equal time
+       windows and keep only the sharpest *qualifying* frame per window, so
+       picks are spread across the whole clip instead of clustering wherever
+       happens to be globally sharpest. A window with no qualifying frame is
+       simply skipped (fewer, honest candidates beat a padded bad one).
 
     Args:
         video_path: Path to the input video file.
-        max_candidates: Maximum frames to return.
+        max_candidates: Maximum frames to return (also the number of
+            coverage windows the clip is split into).
         work_dir: Optional directory for temp files. Created if None.
+        duration_s: Known video duration in seconds (e.g. from ffprobe).
+            Falls back to the last sampled timestamp if not given.
 
     Returns:
         (candidates, work_dir) where candidates is a list of CandidateFrame dicts
-        and work_dir is the temp directory (caller should clean up).
+        and work_dir is the temp directory (caller should clean up). An empty
+        candidate list means no frame in the clip was clear enough to use.
     """
     # Create working directories
     if work_dir is None:
@@ -276,7 +294,9 @@ def extract_candidate_frames(
         logger.warning("ingest — ffmpeg produced no frames")
         return [], work_dir
 
-    # Step 2: Score each frame
+    # Step 2: Downscale first, then score — scoring a 768px frame instead of
+    # a full-res one is the single biggest local speedup, and it makes
+    # MIN_SHARPNESS mean the same thing for a 4K phone clip and a 480p one.
     scored: list[dict] = []
     for i, frame_path in enumerate(raw_paths):
         try:
@@ -285,73 +305,74 @@ def extract_candidate_frames(
             logger.debug("ingest — skipping unreadable frame %d: %s", i, exc)
             continue
 
-        sharpness = _compute_sharpness(img)
-        brightness = _compute_mean_brightness(img)
+        img_small = _downscale_frame(img)
+        sharpness = _compute_sharpness(img_small)
+        brightness = _compute_mean_brightness(img_small)
         timestamp = float(i) / SAMPLE_FPS  # approximate timestamp
 
         scored.append({
             "index": i,
-            "path": frame_path,
-            "image": img,
+            "image": img_small,
             "sharpness": sharpness,
             "brightness": brightness,
             "timestamp": timestamp,
         })
 
+    if not scored:
+        return [], work_dir
+
     logger.info(
         "ingest — scored %d frames, sharpness range [%.0f, %.0f]",
         len(scored),
-        min(s["sharpness"] for s in scored) if scored else 0,
-        max(s["sharpness"] for s in scored) if scored else 0,
+        min(s["sharpness"] for s in scored),
+        max(s["sharpness"] for s in scored),
     )
 
-    # Step 3: Filter out bad frames
+    # Step 3: Vet — drop anything not clear enough to search with. No
+    # fallback: if every sampled frame fails, the clip genuinely doesn't
+    # have a usable view of the outfit, and the caller should say so
+    # honestly instead of the VLM being handed junk.
     filtered = [
         s for s in scored
         if s["sharpness"] >= MIN_SHARPNESS
-        and s["brightness"] >= MIN_MEAN_PIXEL
-        and s["brightness"] <= MAX_MEAN_PIXEL
+        and MIN_MEAN_PIXEL <= s["brightness"] <= MAX_MEAN_PIXEL
     ]
     dropped = len(scored) - len(filtered)
     if dropped:
         logger.info(
-            "ingest — dropped %d frames (blurry/dark/white), %d remain",
+            "ingest — dropped %d frames (blurry/dark/bright), %d remain",
             dropped, len(filtered),
         )
 
     if not filtered:
-        # Fallback: if all frames are "bad", take the best from the originals
-        logger.warning("ingest — all frames filtered out, falling back to top %d by sharpness", max_candidates)
-        filtered = sorted(scored, key=lambda s: s["sharpness"], reverse=True)[:max_candidates]
+        logger.warning(
+            "ingest — no frame in the clip was clear enough to use (%d sampled, 0 passed)",
+            len(scored),
+        )
+        return [], work_dir
 
-    # Step 4: Temporal bucketing — keep sharpest per bucket
-    num_buckets = max(1, math.ceil(
-        (max(s["timestamp"] for s in filtered) + 0.01) / TEMPORAL_BUCKET_S
-    ))
-    buckets: dict[int, dict] = {}
+    # Step 4: Coverage windows — the sharpest qualifying frame per window,
+    # spread evenly across the clip's actual duration.
+    clip_duration = duration_s if duration_s is not None else scored[-1]["timestamp"]
+    window_s = max(clip_duration, 0.01) / max_candidates
+    winners: dict[int, dict] = {}
     for s in filtered:
-        bucket_idx = int(s["timestamp"] / TEMPORAL_BUCKET_S)
-        if bucket_idx not in buckets or s["sharpness"] > buckets[bucket_idx]["sharpness"]:
-            buckets[bucket_idx] = s
+        window_idx = min(int(s["timestamp"] / window_s), max_candidates - 1)
+        if window_idx not in winners or s["sharpness"] > winners[window_idx]["sharpness"]:
+            winners[window_idx] = s
 
-    bucketed = sorted(buckets.values(), key=lambda s: s["timestamp"])
+    selected = sorted(winners.values(), key=lambda s: s["timestamp"])
     logger.info(
-        "ingest — %d temporal buckets (%.1fs each), %d winners",
-        num_buckets, TEMPORAL_BUCKET_S, len(bucketed),
+        "ingest — %d coverage windows (%.1fs each), %d winners",
+        max_candidates, window_s, len(selected),
     )
 
-    # Step 5: Take top N by sharpness, then re-sort by timestamp
-    if len(bucketed) > max_candidates:
-        bucketed = sorted(bucketed, key=lambda s: s["sharpness"], reverse=True)[:max_candidates]
-        bucketed = sorted(bucketed, key=lambda s: s["timestamp"])
-
-    # Step 6: Downscale and save candidates
+    # Step 5: Save the already-downscaled winners as candidates.
     candidates: list[CandidateFrame] = []
-    for s in bucketed:
-        img_small = _downscale_frame(s["image"])
+    for s in selected:
         out_name = f"candidate_{s['index']:04d}.jpg"
         out_path = os.path.join(candidate_dir, out_name)
-        img_small.save(out_path, "JPEG", quality=80)
+        s["image"].save(out_path, "JPEG", quality=80)
         candidates.append(CandidateFrame(
             path=out_path,
             timestamp=s["timestamp"],
@@ -367,8 +388,13 @@ def extract_candidate_frames(
     return candidates, work_dir
 
 
+# Frames beyond this go through the cheap visibility-selection call before
+# ever reaching the expensive high-detail identification call.
+KEEP_FOR_IDENTIFICATION = 3
+
+
 # ---------------------------------------------------------------------------
-# Tier 2: VLM selection + garment identification (single call)
+# Tier 2/2.5: visibility selection + garment identification
 # ---------------------------------------------------------------------------
 def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
     """
@@ -376,12 +402,15 @@ def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
 
     Orchestrates:
       1. validate_video() — check duration, format, size
-      2. extract_candidate_frames() — Tier 1 local heuristics
-      3. analyze_frames_with_vlm() — Tier 2 VLM (selection + identification)
+      2. extract_candidate_frames() — Tier 1: vet + select clear, spread-out frames
+      3. select_best_video_frames() — Tier 1.5: cheap pass judging outfit
+         visibility (angle, lighting, obstruction) among the vetted candidates
+      4. analyze_frames_with_vlm() — Tier 2: identify + merge garments across
+         only the frames step 3 kept
 
     Returns VideoIngestResult with garments, summary, and frame counts.
     """
-    from services.baseten_vlm import analyze_frames_with_vlm
+    from services.baseten_vlm import analyze_frames_with_vlm, select_best_video_frames
 
     # Step 1: Validate
     meta = validate_video(video_path)
@@ -390,26 +419,53 @@ def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
         meta["duration"], meta["width"], meta["height"],
     )
 
-    # Step 2: Extract candidates (Tier 1)
-    candidates, work_dir = extract_candidate_frames(video_path)
+    # Step 2: Extract candidates (Tier 1 — technical quality gate)
+    candidates, work_dir = extract_candidate_frames(video_path, duration_s=meta["duration"])
 
     if not candidates:
-        logger.warning("ingest — no usable frames extracted from video")
+        logger.warning("ingest — no frame in the video was clear enough to search with")
         return VideoIngestResult(
             garments=[],
-            outfit_summary="Could not extract any clear frames from the video.",
+            outfit_summary="Couldn't find a clear enough view of the outfit in this clip.",
             frame_count=0,
             selected_frames=0,
             candidate_dir=work_dir,
         )
 
-    # Step 3: Send to VLM with frame metadata (Tier 2)
     image_paths = [c["path"] for c in candidates]
     frame_metadata = [
         {"index": i, "timestamp": c["timestamp"], "sharpness": c["sharpness"]}
         for i, c in enumerate(candidates)
     ]
 
+    # Step 3: Visibility selection (Tier 1.5) — skip the extra round-trip
+    # when there's nothing to choose between.
+    if len(candidates) > KEEP_FOR_IDENTIFICATION:
+        try:
+            selected_idx, reasons = select_best_video_frames(
+                image_paths, frame_metadata, keep=KEEP_FOR_IDENTIFICATION,
+            )
+        except Exception:
+            logger.exception("ingest — visibility selection failed, using all vetted candidates")
+            selected_idx, reasons = [], {}
+
+        if not selected_idx:
+            selected_idx = list(range(min(KEEP_FOR_IDENTIFICATION, len(candidates))))
+
+        for i in selected_idx:
+            logger.info(
+                "ingest — kept frame %d @ %.1fs: %s",
+                i, frame_metadata[i]["timestamp"], reasons.get(i, "(no reason given)"),
+            )
+        image_paths = [image_paths[i] for i in selected_idx]
+        frame_metadata = [frame_metadata[i] for i in selected_idx]
+    else:
+        logger.info(
+            "ingest — %d candidates already at/below the keep threshold, skipping visibility selection",
+            len(candidates),
+        )
+
+    # Step 4: Identify + merge garments (Tier 2) on the final, small frame set
     try:
         result = analyze_frames_with_vlm(
             image_paths,

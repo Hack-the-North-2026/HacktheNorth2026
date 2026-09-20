@@ -199,7 +199,7 @@ class TestCandidateExtraction:
         candidates, work_dir = extract_candidate_frames(self.video_path)
         try:
             assert len(candidates) > 0
-            assert len(candidates) <= 8  # max_candidates default
+            assert len(candidates) <= 5  # max_candidates default
             for c in candidates:
                 assert os.path.exists(c["path"])
                 assert c["timestamp"] >= 0
@@ -223,6 +223,47 @@ class TestCandidateExtraction:
         )
         try:
             assert len(candidates) <= 2
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+    def test_candidates_spread_across_duration(self):
+        """Coverage windows should pull frames from across the whole clip,
+        not cluster wherever happens to be sharpest."""
+        video_path = str(Path(self.video_path).parent / "long.mp4")
+        _make_test_video(video_path, duration=8.0)
+        candidates, work_dir = extract_candidate_frames(
+            video_path, max_candidates=4, duration_s=8.0,
+        )
+        try:
+            assert len(candidates) >= 2
+            timestamps = [c["timestamp"] for c in candidates]
+            # With 4 windows over 8s, a real spread should cover most of the
+            # clip — not just the first second or two.
+            assert max(timestamps) - min(timestamps) > 4.0, (
+                f"Candidates clustered instead of spread: {timestamps}"
+            )
+        finally:
+            shutil.rmtree(work_dir, ignore_errors=True)
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg not available")
+class TestQualityGate:
+    def test_uniformly_bad_video_returns_no_candidates(self, tmp_path):
+        """A clip where every frame fails the clarity gate should return zero
+        candidates — never a silent fallback to frames we already know are bad."""
+        video_path = str(tmp_path / "black.mp4")
+        cmd = [
+            "ffmpeg", "-f", "lavfi",
+            "-i", "color=c=black:s=320x240:d=3:rate=10",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-y",
+            video_path,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+
+        candidates, work_dir = extract_candidate_frames(video_path)
+        try:
+            assert candidates == []
         finally:
             shutil.rmtree(work_dir, ignore_errors=True)
 
