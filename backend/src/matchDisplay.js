@@ -34,9 +34,11 @@ export function seechipQueryCount(items) {
 
 /**
  * When no card is exact, name the step that failed so the Sentry trace is actionable.
- * null means empty photo or at least one exact — not a matching miss.
+ * Video ingest with no usable frames is `ingest`. Empty photo (or a Found card) is null.
  */
-export function diagnoseFailStage(items) {
+export function diagnoseFailStage(items, extra = {}) {
+  if (extra.empty_reason === 'ingest') return 'ingest';
+  if (extra.empty_reason === 'see' && extra.media_type === 'video') return 'see';
   const list = Array.isArray(items) ? items : [];
   if (!list.length) return null;
   if (exactCount(list) > 0) return null;

@@ -17,6 +17,19 @@ export type GarmentCategory =
   | 'hat'
   | 'accessory';
 
+export const CATEGORY_LABELS: Record<GarmentCategory, string> = {
+  jacket: 'Jackets',
+  shirt: 'Tops',
+  pants: 'Pants',
+  shorts: 'Shorts',
+  skirt: 'Skirts',
+  dress: 'Dresses',
+  shoes: 'Shoes',
+  bag: 'Bags',
+  hat: 'Hats',
+  accessory: 'Accessories',
+};
+
 export type Garment = {
   id: string;
   category: GarmentCategory;
@@ -29,8 +42,10 @@ export type Garment = {
   confidence: number;
   bbox: [number, number, number, number];
   chip_key: string;
+  alt_chip_key?: string;
   accessibility_line: string;
   source_frame_index?: number | null;
+  crop_fallback?: boolean;
 };
 
 export type ProductCandidate = {
@@ -64,25 +79,16 @@ export type IdentifyStatus =
   | 'done'
   | 'error';
 
-export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string> = {
-  queued: 'Queuing your request…',
-  ingesting: 'Preparing media…',
-  seeing: 'Looking at the outfit…',
-  detailing: 'Reading each garment up close…',
-  sourcing: 'Searching shops…',
-  judging: 'Comparing product photos to the crop…',
-  retrying: 'Searching the open web…',
-  ranking: 'Picking the best matches…',
-  done: 'Found your fit',
-  error: 'Something went wrong',
-};
+export { IDENTIFY_STATUS_COPY } from './identifyCopy';
 
 export type IdentifyResult = {
   job_id: string;
   status: IdentifyStatus;
   origin: IdentifyOrigin;
+  media_type?: 'image' | 'video';
   thumbnail_url?: string;
   keyframes?: string[];
+  empty_reason?: 'ingest' | 'see';
   outfit_summary?: string;
   items: Array<{
     garment: Garment;

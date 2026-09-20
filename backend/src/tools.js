@@ -5,6 +5,8 @@ import { agentLog, jobMsg, logger } from './logger.js';
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 60_000);
 const VIDEO_TIMEOUT_MS = Number(process.env.VIDEO_TIMEOUT_MS || 90_000);
+const VIDEO_SEE_TIMEOUT_MS = Number(process.env.VIDEO_SEE_TIMEOUT_MS || 90_000);
+const INGEST_TIMEOUT_MS = Number(process.env.INGEST_TIMEOUT_MS || 30_000);
 const SEE_CHIP_TIMEOUT_MS = Number(process.env.SEE_CHIP_TIMEOUT_MS || 45_000);
 const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || 70_000);
 const RETRIEVE_TIMEOUT_MS = Number(process.env.RETRIEVE_TIMEOUT_MS || 25_000);
@@ -77,7 +79,8 @@ export async function seeAndCrop(file, jobId, { detail = true } = {}) {
 }
 
 export async function seeVideoAndCrop(file, jobId) {
-  const url = `${AI_SERVICE_URL()}/api/identify-video`;
+  // Combined fallback. Express V1 prefers ingest + see so the job can show ingesting.
+  const url = `${AI_SERVICE_URL()}/api/identify-video?detail=0`;
   const response = await fetch(url, {
     method: 'POST',
     body: videoFormData(file),
@@ -95,7 +98,86 @@ export async function seeVideoAndCrop(file, jobId) {
     outfit_summary: data.outfit_summary || '',
     image_path: data.image_path,
     frame_count: data.frame_count || 0,
+    selected_frames: data.selected_frames || data.frame_count || 0,
     keyframes: Array.isArray(data.keyframes) ? data.keyframes : [],
+    image_paths: Array.isArray(data.image_paths) ? data.image_paths : [],
+    frames: Array.isArray(data.frames) ? data.frames : [],
+    duration: Number.isFinite(Number(data.duration)) ? Number(data.duration) : null,
+    empty_reason: data.empty_reason === 'ingest' || data.empty_reason === 'see' ? data.empty_reason : undefined,
+  };
+}
+
+function normalizeIngest(data) {
+  const frames = Array.isArray(data?.frames) ? data.frames : [];
+  const imagePaths = Array.isArray(data?.image_paths)
+    ? data.image_paths
+    : frames.map((frame) => frame?.path).filter(Boolean);
+  return {
+    garments: [],
+    outfit_summary: data?.outfit_summary || '',
+    frame_count: Number(data?.frame_count || 0),
+    selected_frames: Number(data?.selected_frames || imagePaths.length || 0),
+    image_paths: imagePaths,
+    frames,
+    keyframes: Array.isArray(data?.keyframes) ? data.keyframes : [],
+    image_path: imagePaths[0] || data?.image_path || '',
+    duration: Number.isFinite(Number(data?.duration)) ? Number(data.duration) : null,
+  };
+}
+
+export async function ingestVideo(file, jobId) {
+  logger.info(jobMsg(jobId, 'ingest — pulling clear frames (ffmpeg)'));
+  const url = `${AI_SERVICE_URL()}/tools/ingest`;
+  const response = await fetch(url, {
+    method: 'POST',
+    body: videoFormData(file),
+    headers: jobHeaders(jobId),
+    signal: AbortSignal.timeout(INGEST_TIMEOUT_MS),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `Video ingest failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  return normalizeIngest(data);
+}
+
+export async function seeVideoFrames(ingested, jobId) {
+  const imagePaths = Array.isArray(ingested?.image_paths) ? ingested.image_paths : [];
+  const frames = Array.isArray(ingested?.frames) ? ingested.frames : [];
+  const frameMetadata = frames.length
+    ? frames.map((frame, index) => ({
+        index: frame?.index ?? index,
+        timestamp: frame?.timestamp ?? 0,
+        sharpness: frame?.sharpness ?? 0,
+      }))
+    : imagePaths.map((_path, index) => ({ index, timestamp: 0, sharpness: 0 }));
+
+  logger.info(jobMsg(jobId, `see — reading the outfit across ${imagePaths.length} frames`));
+  const url = `${AI_SERVICE_URL()}/tools/see`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: jobHeaders(jobId, { 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ image_paths: imagePaths, frame_metadata: frameMetadata }),
+    signal: AbortSignal.timeout(VIDEO_SEE_TIMEOUT_MS),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `Video see failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  return {
+    garments: Array.isArray(data.garments) ? data.garments : [],
+    outfit_summary: data.outfit_summary || '',
+    image_path: data.image_path || imagePaths[0] || '',
+    frame_count: ingested?.frame_count || imagePaths.length,
+    selected_frames: ingested?.selected_frames || imagePaths.length,
+    keyframes: ingested?.keyframes || [],
+    image_paths: imagePaths,
+    frames,
+    duration: Number.isFinite(Number(ingested?.duration)) ? Number(ingested.duration) : null,
   };
 }
 
@@ -195,18 +277,25 @@ export async function perceive(file, jobId, { detail = true } = {}) {
   }
 }
 
-function chipPayload(garment) {
-  const chipKey = garment?.chip_key;
-  if (!chipKey || typeof chipKey !== 'string') return null;
-  if (!path.isAbsolute(chipKey)) return null;
-  try {
-    const bytes = readFileSync(chipKey);
-    const ext = path.extname(chipKey).toLowerCase();
-    const contentType = ext === '.png' ? 'image/png' : 'image/jpeg';
-    return { content_type: contentType, data: bytes.toString('base64') };
-  } catch {
-    return null;
+const IMAGE_CHIP_EXT = /\.(jpe?g|png|webp)$/i;
+
+export function chipPayload(garment) {
+  const keys = [garment?.chip_key, garment?.alt_chip_key];
+  for (const chipKey of keys) {
+    if (!chipKey || typeof chipKey !== 'string') continue;
+    if (!path.isAbsolute(chipKey)) continue;
+    if (!IMAGE_CHIP_EXT.test(chipKey)) continue;
+    try {
+      const bytes = readFileSync(chipKey);
+      if (!bytes?.length) continue;
+      const ext = path.extname(chipKey).toLowerCase();
+      const contentType = ext === '.png' ? 'image/png' : 'image/jpeg';
+      return { content_type: contentType, data: bytes.toString('base64') };
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 async function postJson(pathname, body, timeoutMs, jobId) {
@@ -253,16 +342,17 @@ export async function resolveSourceMode(forceMock) {
       return cachedSourceMode;
     }
   } catch {
-    // AI service down or no source route — fall through to fixtures.
+    // Timeout or down — do not cache mock so the next job can retry.
   }
 
-  cachedSourceMode = 'mock';
   logger.warn('source — AI source/rank tools are down; will use mock matches');
-  return cachedSourceMode;
+  return 'mock';
 }
 
 export async function retrieveCandidates(garment, jobId) {
   const chip = chipPayload(garment);
+  const label = garment?.category || garment?.id || 'item';
+  logger.info(jobMsg(jobId, `source — ${label}: ${chip ? 'chip like on' : 'text only'}`));
   const { response, data } = await postJson(
     '/tools/retrieve',
     { garment, chip },

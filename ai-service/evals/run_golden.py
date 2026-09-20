@@ -13,24 +13,49 @@ AI_SERVICE = ROOT.parent
 sys.path.insert(0, str(AI_SERVICE))
 
 from evals.golden.recorded import recorded_runs  # noqa: E402
+from evals.golden.videos.recorded import recorded_video_runs  # noqa: E402
 from evals.metrics import score_case, summarize  # noqa: E402
 
 MANIFEST = ROOT / "golden" / "manifest.json"
+VIDEO_MANIFEST = ROOT / "golden" / "videos" / "manifest.json"
 IMAGES = ROOT / "golden" / "images"
+VIDEOS = ROOT / "golden" / "videos"
 LIVE_RUNS = 3
 
 
-def load_manifest() -> list[dict]:
-    payload = json.loads(MANIFEST.read_text())
-    return list(payload.get("cases") or [])
+def _load_json_cases(path: Path, default_media: str) -> list[dict]:
+    if not path.is_file():
+        return []
+    payload = json.loads(path.read_text())
+    cases = []
+    for case in payload.get("cases") or []:
+        row = dict(case)
+        row.setdefault("media", default_media)
+        cases.append(row)
+    return cases
 
 
-def evaluate(recorded: dict[str, list[dict]] | None = None) -> dict:
-    cases = load_manifest()
-    runs_by_id = recorded if recorded is not None else recorded_runs()
+def load_manifest(media: str | None = None) -> list[dict]:
+    cases = _load_json_cases(MANIFEST, "image") + _load_json_cases(VIDEO_MANIFEST, "video")
+    if media:
+        return [case for case in cases if case.get("media", "image") == media]
+    return cases
+
+
+def all_recorded_runs() -> dict[str, list[dict]]:
+    merged = dict(recorded_runs())
+    merged.update(recorded_video_runs())
+    return merged
+
+
+def evaluate(recorded: dict[str, list[dict]] | None = None, media: str | None = None) -> dict:
+    cases = load_manifest(media)
+    runs_by_id = recorded if recorded is not None else all_recorded_runs()
     rows = []
     for case in cases:
         case_id = str(case.get("id") or "")
+        if recorded is not None and case_id not in runs_by_id:
+            continue
         runs = runs_by_id.get(case_id) or []
         rows.append(score_case(case, runs))
     summary = summarize(rows)
@@ -45,14 +70,28 @@ def _case_image(case_id: str) -> Path | None:
     return None
 
 
-def _identify_once(base_url: str, image: Path, timeout_s: float = 210.0) -> dict:
+def _case_video(case_id: str) -> Path | None:
+    for suffix in (".mp4", ".mov", ".webm", ".m4v"):
+        path = VIDEOS / f"{case_id}{suffix}"
+        if path.is_file():
+            return path
+    return None
+
+
+def _identify_once(base_url: str, media: Path, media_type: str = "image", timeout_s: float = 270.0) -> dict:
     import requests
 
-    with image.open("rb") as handle:
+    field = "video" if media_type == "video" else "image"
+    suffix = media.suffix.lower()
+    if media_type == "video":
+        content = "video/quicktime" if suffix == ".mov" else "video/mp4"
+    else:
+        content = "image/jpeg"
+    with media.open("rb") as handle:
         response = requests.post(
             f"{base_url.rstrip('/')}/api/identify",
-            files={"image": (image.name, handle, "image/jpeg")},
-            data={"origin": "app"},
+            files={field: (media.name, handle, content)},
+            data={"origin": "app", "type": media_type},
             timeout=30,
         )
     response.raise_for_status()
@@ -73,20 +112,35 @@ def _identify_once(base_url: str, image: Path, timeout_s: float = 210.0) -> dict
     raise TimeoutError(f"job {job_id} did not finish in {int(timeout_s)}s")
 
 
-def live_runs(base_url: str, runs: int = LIVE_RUNS) -> dict[str, list[dict]]:
-    cases = load_manifest()
-    missing = [str(case.get("id") or "") for case in cases if not _case_image(str(case.get("id") or ""))]
-    if missing:
-        raise FileNotFoundError(
-            "Live eval needs one image per case in evals/golden/images/ "
-            f"(missing: {', '.join(missing)}). Name files {{case_id}}.jpg"
-        )
-    out: dict[str, list[dict]] = {}
+def live_runs(base_url: str, runs: int = LIVE_RUNS, media: str | None = "image") -> dict[str, list[dict]]:
+    cases = load_manifest(media)
+    missing = []
     for case in cases:
         case_id = str(case.get("id") or "")
-        image = _case_image(case_id)
-        assert image is not None
-        out[case_id] = [_identify_once(base_url, image) for _ in range(runs)]
+        kind = case.get("media", "image")
+        found = _case_video(case_id) if kind == "video" else _case_image(case_id)
+        if not found:
+            missing.append(case_id)
+    present = [case for case in cases if str(case.get("id") or "") not in missing]
+    if not present:
+        folder = "evals/golden/videos/" if media == "video" else "evals/golden/images/"
+        raise FileNotFoundError(
+            f"Live eval needs at least one file in {folder} "
+            f"(missing: {', '.join(missing)}). Name files {{case_id}}.jpg/.mp4/.mov"
+        )
+    if missing:
+        print(
+            f"NOTE: skipping {len(missing)} cases without media: {', '.join(missing)}",
+            file=sys.stderr,
+        )
+    out: dict[str, list[dict]] = {}
+    for case in present:
+        case_id = str(case.get("id") or "")
+        kind = case.get("media", "image")
+        path = _case_video(case_id) if kind == "video" else _case_image(case_id)
+        assert path is not None
+        print(f"live — {case_id} × {runs} from {path.name}", file=sys.stderr)
+        out[case_id] = [_identify_once(base_url, path, kind) for _ in range(runs)]
     return out
 
 
@@ -95,7 +149,12 @@ def main() -> int:
     parser.add_argument(
         "--live",
         action="store_true",
-        help="POST evals/golden/images/{case_id}.jpg to Express three times per case.",
+        help="POST golden stills (or --videos clips) to Express three times per case.",
+    )
+    parser.add_argument(
+        "--videos",
+        action="store_true",
+        help="Score the video golden set (recorded fixtures, or live clips with --live).",
     )
     parser.add_argument(
         "--base-url",
@@ -103,9 +162,11 @@ def main() -> int:
         help="Express origin for --live (default http://127.0.0.1:4000)",
     )
     args = parser.parse_args()
+    media = "video" if args.videos else "image"
     if args.live:
         try:
-            report = evaluate(live_runs(args.base_url))
+            live = live_runs(args.base_url, media=media)
+            report = evaluate(live, media=media)
         except FileNotFoundError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -123,12 +184,12 @@ def main() -> int:
         )
         return 0
 
-    report = evaluate()
+    report = evaluate(media=media)
     print(json.dumps(report, indent=2))
     summary = report["summary"]
     print(
         "NOTE: recorded fixtures only test the scorer. Use --live with "
-        "evals/golden/images for matching accuracy.",
+        "evals/golden/images, or --live --videos with evals/golden/videos.",
         file=sys.stderr,
     )
     if summary["stable_cases"] != summary["cases"]:

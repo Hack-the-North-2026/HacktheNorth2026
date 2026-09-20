@@ -33,6 +33,7 @@ logger = logging.getLogger("fit_stealer.see")
 
 MIN_CONFIDENCE = 0.5
 BBOX_BINS = 20
+KEEP_FOR_IDENTIFICATION = 3
 
 # ---------------------------------------------------------------------------
 # Garment JSON Schema (strict: true)
@@ -88,12 +89,29 @@ _GARMENT_SCHEMA = {
                             "chip_key":         {"type": "string"},
                             "accessibility_line": {"type": "string"},
                             "source_frame_index": {"type": ["integer", "null"]},
+                            "alt_frames": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "source_frame_index": {"type": "integer"},
+                                        "bbox": {
+                                            "type": "array",
+                                            "items": {"type": "number"},
+                                            "minItems": 4,
+                                            "maxItems": 4,
+                                        },
+                                    },
+                                    "required": ["source_frame_index", "bbox"],
+                                    "additionalProperties": False,
+                                },
+                            },
                         },
                         "required": [
                             "id", "category", "description", "search_query",
                             "attributes", "brand", "brand_cues", "confidence",
                             "bbox", "chip_key", "accessibility_line",
-                            "source_frame_index",
+                            "source_frame_index", "alt_frames",
                         ],
                         "additionalProperties": False,
                     },
@@ -119,7 +137,8 @@ Rules you MUST follow:
 6. accessibility_line: one concise sentence describing the item for a visually impaired user.
 7. outfit_summary: one sentence summarizing the full look.
 8. Do NOT include people, faces, backgrounds, or non-clothing items.
-9. source_frame_index: set to null for single-image input."""
+9. source_frame_index: set to null for single-image input.
+10. alt_frames: empty array for single-image input."""
 
 _VIDEO_SYSTEM_PROMPT = """You are a precise fashion identification system analyzing video frames.
 
@@ -140,7 +159,8 @@ Rules you MUST follow:
 6. accessibility_line: one concise sentence describing the item.
 7. outfit_summary: one sentence summarizing the full look across the frames.
 8. source_frame_index: the exact number shown in that frame's "[Frame N @ ...]" label — not its position in the list.
-9. Do NOT include people, faces, backgrounds, or non-clothing items."""
+9. Do NOT include people, faces, backgrounds, or non-clothing items.
+10. alt_frames: if the same garment is clearly visible on another kept frame, add that frame's source_frame_index and bbox. Empty array if only one usable view. Never repeat source_frame_index."""
 
 # ---------------------------------------------------------------------------
 # Frame-visibility selection (Stage 3 Tier 1.5)
@@ -207,11 +227,54 @@ def quantize_bbox(bbox) -> tuple[int, int, int, int]:
     return bins[0], bins[1], bins[2], bins[3]
 
 
-def stable_garment_id(category: str | None, bbox, used: set[str] | None = None) -> str:
-    """Deterministic id from category + quantized bbox. No uuid4."""
+def sanitize_alt_frames(garment: dict, is_video: bool) -> list[dict]:
+    """Keep only usable second-angle boxes. Stills never carry alt frames."""
+    if not is_video:
+        return []
+    primary = _parse_frame_index(garment.get("source_frame_index"))
+    cleaned: list[dict] = []
+    seen: set[int] = set()
+    for item in garment.get("alt_frames") or []:
+        if not isinstance(item, dict):
+            continue
+        index = _parse_frame_index(item.get("source_frame_index"))
+        bbox = item.get("bbox")
+        if index is None or index == primary or index in seen:
+            continue
+        if not isinstance(bbox, list) or len(bbox) != 4:
+            continue
+        seen.add(index)
+        cleaned.append({"source_frame_index": index, "bbox": bbox})
+    return cleaned
+
+
+def _parse_frame_index(source_frame_index) -> int | None:
+    if source_frame_index is None or source_frame_index == "":
+        return None
+    try:
+        return max(0, int(source_frame_index))
+    except (TypeError, ValueError):
+        return None
+
+
+def stable_garment_id(
+    category: str | None,
+    bbox,
+    used: set[str] | None = None,
+    source_frame_index: int | None = None,
+) -> str:
+    """Deterministic id from category + quantized bbox (+ video frame). No uuid4.
+
+    Stills stay `{category}-{q0}-{q1}-{q2}-{q3}`. Video includes
+    `source_frame_index` so the same jacket on two frames cannot collide.
+    """
     cat = re.sub(r"[^a-z0-9]+", "", str(category or "item").lower()) or "item"
     q0, q1, q2, q3 = quantize_bbox(bbox)
-    base = f"{cat}-{q0:02d}-{q1:02d}-{q2:02d}-{q3:02d}"
+    frame = _parse_frame_index(source_frame_index)
+    if frame is None:
+        base = f"{cat}-{q0:02d}-{q1:02d}-{q2:02d}-{q3:02d}"
+    else:
+        base = f"{cat}-{frame:02d}-{q0:02d}-{q1:02d}-{q2:02d}-{q3:02d}"
     taken = used if used is not None else set()
     if base not in taken:
         taken.add(base)
@@ -353,6 +416,26 @@ def analyze_frames_with_vlm(
         raise ValueError("image_paths must not be empty")
 
     is_video = frame_metadata is not None and len(frame_metadata) > 0
+    if is_video and len(image_paths) > KEEP_FOR_IDENTIFICATION:
+        metadata = list(frame_metadata or [])
+        try:
+            selected_idx, reasons = select_best_video_frames(
+                image_paths, metadata, keep=KEEP_FOR_IDENTIFICATION,
+            )
+        except Exception:
+            logger.exception("see — visibility selection failed, using first vetted frames")
+            selected_idx, reasons = [], {}
+        if not selected_idx:
+            selected_idx = list(range(KEEP_FOR_IDENTIFICATION))
+        for index in selected_idx:
+            logger.info(
+                "see — kept frame %s @ %ss: %s",
+                metadata[index].get("index", index) if index < len(metadata) else index,
+                metadata[index].get("timestamp", 0) if index < len(metadata) else 0,
+                reasons.get(index, "(no reason given)"),
+            )
+        image_paths = [image_paths[i] for i in selected_idx]
+        frame_metadata = [metadata[i] if i < len(metadata) else {"index": i} for i in selected_idx]
 
     logger.info(
         "see — calling Baseten (%s) with %s %s%s",
@@ -450,8 +533,12 @@ def analyze_frames_with_vlm(
         if garment.get("source_frame_index") is None and not is_video:
             garment["source_frame_index"] = None
         garment["id"] = stable_garment_id(
-            garment.get("category"), garment.get("bbox"), used_ids
+            garment.get("category"),
+            garment.get("bbox"),
+            used_ids,
+            garment.get("source_frame_index") if is_video else None,
         )
+        garment["alt_frames"] = sanitize_alt_frames(garment, is_video)
         garment["search_query"] = canonicalize_query(
             garment.get("search_query") or garment.get("description") or ""
         )

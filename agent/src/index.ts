@@ -1,7 +1,8 @@
 import { getAgentByName } from "agents";
 import { IdentifyAgent } from "./identify-agent";
 import { cacheKey } from "./matching";
-import type { Env, IdentifyOrigin, JobState } from "./types";
+import { isVideoUpload } from "./media";
+import type { Env, IdentifyMediaType, IdentifyOrigin, JobState } from "./types";
 
 export { IdentifyAgent };
 
@@ -11,7 +12,7 @@ const CORS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization, x-device-id, x-job-id, x-request-id",
 };
 
-const ORIGINS = new Set(["app", "android_overlay", "android_qs", "share"]);
+const ORIGINS = new Set(["app", "android_overlay", "android_qs", "share", "ios_share"]);
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, { status, headers: CORS });
@@ -41,6 +42,20 @@ export default {
       return startJob(request, env, ctx);
     }
 
+    const frameMatch = url.pathname.match(/^\/jobs\/([^/]+)\/frames\/(\d+)$/);
+    if (frameMatch && request.method === "GET") {
+      const object = await env.MEDIA.get(`jobs/${frameMatch[1]}/frames/${frameMatch[2]}.jpg`);
+      if (!object) return json({ error: "Frame not found." }, 404);
+      return new Response(object.body, {
+        status: 200,
+        headers: {
+          ...CORS,
+          "Content-Type": object.httpMetadata?.contentType || "image/jpeg",
+          "Cache-Control": "no-store",
+        },
+      });
+    }
+
     const jobMatch = url.pathname.match(/^\/jobs\/([^/]+)$/);
     if (jobMatch && request.method === "GET") {
       const agent = await getAgentByName(
@@ -56,28 +71,38 @@ export default {
   },
 } satisfies ExportedHandler<Env>;
 
+function asFile(value: unknown): File | null {
+  return value instanceof File && value.size > 0 ? value : null;
+}
+
 async function startJob(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
   const form = await request.formData();
-  const image = form.get("image");
-  if (!(image instanceof File) || image.size === 0) {
-    return json({ error: 'An image file is required (multipart field "image").' }, 400);
+  const typeField = String(form.get("type") || "");
+  const video = asFile(form.get("video"));
+  const image = asFile(form.get("image")) || asFile(form.get("file"));
+  const file = video || image;
+  if (!file) {
+    return json({ error: 'A file is required (multipart field "image" or "video").' }, 400);
   }
+  const mediaType: IdentifyMediaType = isVideoUpload(file, typeField) || video ? "video" : "image";
 
   const originRaw = String(form.get("origin") || "app");
   const origin = (ORIGINS.has(originRaw) ? originRaw : "app") as IdentifyOrigin;
-  const bytes = await image.arrayBuffer();
+  const bytes = await file.arrayBuffer();
   const imageHash = await sha256Hex(bytes);
   const jobId = crypto.randomUUID();
   const agent = await getAgentByName(
     env.IdentifyAgent as unknown as DurableObjectNamespace<IdentifyAgent>,
     jobId,
   );
+  const filename = file.name || (mediaType === "video" ? "clip.mp4" : "screenshot.jpg");
+  const contentType = file.type || (mediaType === "video" ? "video/mp4" : "image/jpeg");
 
   const cachedRaw = await env.MATCH_CACHE.get(cacheKey(imageHash));
   if (cachedRaw) {
-    let cached: Pick<JobState, "outfit_summary" | "items" | "steps"> | null = null;
+    let cached: Partial<JobState> | null = null;
     try {
-      cached = JSON.parse(cachedRaw) as Pick<JobState, "outfit_summary" | "items" | "steps">;
+      cached = JSON.parse(cachedRaw) as Partial<JobState>;
     } catch {
       cached = null;
     }
@@ -86,10 +111,14 @@ async function startJob(request: Request, env: Env, ctx: ExecutionContext): Prom
         job_id: jobId,
         status: "done",
         origin,
+        media_type: mediaType,
         outfit_summary: cached.outfit_summary || "",
         items: cached.items,
         steps: cached.steps || [],
         image_hash: imageHash,
+        keyframes: cached.keyframes || [],
+        thumbnail_url: cached.thumbnail_url,
+        empty_reason: cached.empty_reason,
       };
       await agent.fetch(
         new Request("https://identify-agent/run", {
@@ -100,19 +129,20 @@ async function startJob(request: Request, env: Env, ctx: ExecutionContext): Prom
             origin,
             image_hash: imageHash,
             r2_key: "",
-            filename: image.name || "screenshot.jpg",
-            content_type: image.type || "image/jpeg",
+            filename,
+            content_type: contentType,
+            media_type: mediaType,
             cached: hydrated,
           }),
         }),
       );
-      return json({ job_id: jobId, status: "done" });
+      return json({ job_id: jobId, status: "done", media_type: mediaType });
     }
   }
 
-  const r2Key = `jobs/${jobId}/${image.name || "screenshot.jpg"}`;
+  const r2Key = `jobs/${jobId}/${filename}`;
   await env.MEDIA.put(r2Key, bytes, {
-    httpMetadata: { contentType: image.type || "image/jpeg" },
+    httpMetadata: { contentType },
   });
 
   const runRequest = new Request("https://identify-agent/run", {
@@ -123,10 +153,11 @@ async function startJob(request: Request, env: Env, ctx: ExecutionContext): Prom
       origin,
       image_hash: imageHash,
       r2_key: r2Key,
-      filename: image.name || "screenshot.jpg",
-      content_type: image.type || "image/jpeg",
+      filename,
+      content_type: contentType,
+      media_type: mediaType,
     }),
   });
   ctx.waitUntil(agent.fetch(runRequest));
-  return json({ job_id: jobId, status: "queued" });
+  return json({ job_id: jobId, status: "queued", media_type: mediaType });
 }

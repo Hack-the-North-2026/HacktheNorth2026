@@ -27,6 +27,9 @@ test('preferStrongExact keeps up to three similars when nothing is exact', () =>
 });
 
 test('diagnoseFailStage names seechip, retrieve, judge, or rank', () => {
+  assert.equal(diagnoseFailStage([], { empty_reason: 'ingest' }), 'ingest');
+  assert.equal(diagnoseFailStage([], { empty_reason: 'see', media_type: 'video' }), 'see');
+  assert.equal(diagnoseFailStage([], { empty_reason: 'see', media_type: 'image' }), null);
   assert.equal(diagnoseFailStage([]), null);
   assert.equal(
     diagnoseFailStage([

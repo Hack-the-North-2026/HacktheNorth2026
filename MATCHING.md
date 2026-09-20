@@ -66,7 +66,7 @@ Hits are deduped by canonical URL (tracking params stripped). Shopify wins if Co
 
 **Composio** `COMPOSIO_SEARCH_SHOPPING` runs only when Shopify is thin (< 4 unique URLs) or `COMPOSIO_SHOPPING=always`. It searches the primary and distinctive queries. No OAuth. Those rows keep `source: composio` and go through the same visual + honesty gate. Missing `COMPOSIO_API_KEY` is a no-op.
 
-Express `SOURCE_TIMEOUT_MS` is 70s. `JOB_TIMEOUT_MS` is 210s so SeeChip + reformulate + optional browse can finish.
+Express `SOURCE_TIMEOUT_MS` is 70s. `JOB_TIMEOUT_MS` is 270s so video See (visibility pick + VLM) + SeeChip + reformulate + optional browse can finish.
 
 ## Stage E — what landed
 
@@ -107,11 +107,31 @@ A 10-case golden **scorer** lives in `ai-service/evals/golden/`. `python -m eval
 
 Accuracy run: drop stills at `ai-service/evals/golden/images/{case_id}.jpg` and run `python -m evals.run_golden --live` against Express (three jobs per case). Jaccard and top URL must be stable.
 
-When a job has **zero exact** cards, Sentry `identify.exact_rate_zero` names the miss: `seechip`, `retrieve`, `judge`, or `rank`.
+When a job has **zero exact** cards, Sentry `identify.exact_rate_zero` names the miss: `ingest` (clip, no usable frames), `seechip`, `retrieve`, `judge`, or `rank`. Logs include `media_type`.
 
 UI still uses Found / Similar badges. If VisualJudge confirmed an exact, **only that card** is shown. Empty matches show “No product matches yet” instead of fake Shopify URLs.
 
 Demo: `ai-service/evals/demo.sh path/to/screenshot.jpg`. Line for judges: *Lens showed similar outfits. We cropped the jacket, searched every Shopify merchant plus the open web, and confirmed the product photo against the chip.*
+
+## Video — what landed (V0–V6)
+
+Short video uses the **same** matching loop. The extra work is ingest + chip quality + clip UX.
+
+| Stage | Status | Proof |
+| --- | --- | --- |
+| V0 Wire check | **ship** | Clip jobs run SeeChip + `matchOutfit`; live misses have no mock Shopify URLs |
+| V1 Split ingest | **ship** | Status `ingesting` → `seeing` → `detailing`; keyframes published after ffmpeg |
+| V2 Freeze the dice | **ship** | sha256 of clip bytes (+ duration key); empties are not cached; VLM `temperature=0` `seed=0` |
+| V3 Chip from the right pixels | **ship** | Crop `source_frame_index` with 10% pad; optional `alt_chip_key` |
+| V4 Shared loop | **ship** | Video chips reach Shopify `like`; browse and re-judge use the same chip; exact still needs 0.82 |
+| V5 Capture / results | **ship** | Live status copy, keyframe URLs (not data URLs), ingest-empty vs See-empty copy, 270s poll |
+| V6 Cloudflare + eval | **wired** (eval live on 2 clips) | IdentifyAgent accepts `type=video`, stores frames in R2, See can take frame bytes. Live `--videos` ran 3× on `ui-overlay-tiktok.mov` and `white-oxford-turning.mp4` (2/2 Jaccard+top-URL stable). Remaining planned kinds have no files. Cloudflare Worker path is still unproven on a live DO. |
+
+**Cloudflare:** `POST /api/identify` with field `video` (or `type=video`). The Durable Object calls `/tools/ingest` then `/tools/see`, writes keyframe JPEGs to R2 `jobs/{id}/frames/{n}.jpg`, and caches the finished result under `sha256:{clip}`. Expo can still use Express `:4000`.
+
+**Eval:** `python -m evals.run_golden --videos` scores recorded clip fixtures (scorer only). `--live --videos` posts each on-disk `{case_id}.mp4`/`.mov` three times and skips missing files. Present live clips: TikTok overlay (grey knit / jeans / sneakers) and sidewalk white oxford. Jaccard and top URL must be stable.
+
+Demo line for a clip: *Lens matched the video. We picked the clearest frames, cropped the jacket, searched Shopify, and confirmed the product photo against the chip.*
 
 ## Honesty rules that stay
 

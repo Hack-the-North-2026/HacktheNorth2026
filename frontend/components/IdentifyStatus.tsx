@@ -1,6 +1,8 @@
 import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { IDENTIFY_STATUS_COPY, IdentifyStatus } from '../lib/types';
+import { ACCENT, TEXT_PRIMARY, SURFACE_MUTED, BORDER, FONT_SEMIBOLD, FS_MD } from '../lib/theme';
+import { identifyStatusCopy } from '../lib/identifyCopy';
 
 const STEPS: IdentifyStatus[] = [
   'queued',
@@ -12,13 +14,21 @@ const STEPS: IdentifyStatus[] = [
   'ranking',
 ];
 
-export function IdentifyStatusView({ status }: { status: IdentifyStatus }) {
+export function IdentifyStatusView({
+  status,
+  mediaType = 'image',
+  note,
+}: {
+  status: IdentifyStatus;
+  mediaType?: 'image' | 'video';
+  note?: string;
+}) {
   const progressStatus = status === 'retrying' ? 'judging' : status;
   const currentIndex = Math.max(0, STEPS.indexOf(progressStatus));
 
   return (
     <View style={styles.wrap}>
-      <ActivityIndicator color="#9C9CFF" size="large" />
+      <ActivityIndicator color={ACCENT} size="large" />
       <Text style={styles.title}>{IDENTIFY_STATUS_COPY[status]}</Text>
       <View style={styles.steps}>
         {STEPS.map((step, index) => {
@@ -57,9 +67,9 @@ const styles = StyleSheet.create({
     gap: 16,
   },
   title: {
-    color: '#F5F5FA',
-    fontSize: 16,
-    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    fontSize: FS_MD,
+    fontFamily: FONT_SEMIBOLD,
     textAlign: 'center',
   },
   steps: {
@@ -73,10 +83,10 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   dotActive: {
-    backgroundColor: '#9C9CFF',
+    backgroundColor: ACCENT,
   },
   dotIdle: {
-    backgroundColor: 'rgba(255,255,255,0.12)',
+    backgroundColor: SURFACE_MUTED,
   },
   skeletonCard: {
     width: '100%',
@@ -84,13 +94,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    borderBottomColor: BORDER,
   },
   skeletonImage: {
     width: 60,
     height: 60,
     borderRadius: 12,
-    backgroundColor: '#12121A',
+    backgroundColor: SURFACE_MUTED,
   },
   skeletonBody: {
     flex: 1,
@@ -101,19 +111,19 @@ const styles = StyleSheet.create({
   skeletonLine: {
     height: 10,
     borderRadius: 6,
-    backgroundColor: '#12121A',
+    backgroundColor: SURFACE_MUTED,
     width: '90%',
   },
   skeletonLineShort: {
     height: 10,
     borderRadius: 6,
-    backgroundColor: '#12121A',
+    backgroundColor: SURFACE_MUTED,
     width: '30%',
   },
   skeletonLineMid: {
     height: 10,
     borderRadius: 6,
-    backgroundColor: '#12121A',
+    backgroundColor: SURFACE_MUTED,
     width: '50%',
   },
 });

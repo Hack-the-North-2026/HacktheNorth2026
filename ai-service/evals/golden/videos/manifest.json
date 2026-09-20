@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "id": "turning-leather-jacket",
+      "kind": "distinctive_jacket",
+      "media": "video",
+      "expected_categories": ["jacket"],
+      "expect_empty": false,
+      "expect_exact": true
+    },
+    {
+      "id": "logo-hoodie-turning",
+      "kind": "logo",
+      "media": "video",
+      "expected_categories": ["shirt"],
+      "expect_empty": false,
+      "expect_exact": true
+    },
+    {
+      "id": "generic-tee-clip",
+      "kind": "generic_tee",
+      "media": "video",
+      "expected_categories": ["shirt"],
+      "expect_empty": false,
+      "expect_exact": false
+    },
+    {
+      "id": "dark-blur-fail",
+      "kind": "blur_fail",
+      "media": "video",
+      "expected_categories": [],
+      "expect_empty": true,
+      "expect_exact": false,
+      "empty_reason": "ingest"
+    },
+    {
+      "id": "ui-overlay-tiktok",
+      "kind": "ui_overlay",
+      "media": "video",
+      "expected_categories": ["shirt", "pants", "shoes"],
+      "expect_empty": false,
+      "expect_exact": false,
+      "notes": "5.4s TikTok clip: grey waffle knit, dark wide jeans, white sneakers, @bygeorgemem chrome"
+    },
+    {
+      "id": "white-oxford-turning",
+      "kind": "generic_tee",
+      "media": "video",
+      "expected_categories": ["shirt", "pants", "shoes"],
+      "expect_empty": false,
+      "expect_exact": false,
+      "notes": "12.7s sidewalk turn: white oxford, light wide jeans, black shoes"
+    },
+    {
+      "id": "empty-room-clip",
+      "kind": "no_clothes",
+      "media": "video",
+      "expected_categories": [],
+      "expect_empty": true,
+      "expect_exact": false,
+      "empty_reason": "see"
+    }
+  ]
+}
