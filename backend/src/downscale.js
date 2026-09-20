@@ -8,6 +8,24 @@ export function sha256Buffer(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
 }
 
+export function clipCacheKey(sha256, durationS) {
+  if (!sha256) return null;
+  if (durationS == null || !Number.isFinite(Number(durationS))) return String(sha256);
+  const tenths = Math.round(Number(durationS) * 10);
+  return `${sha256}:d${tenths}`;
+}
+
+export function attachClipHash(file) {
+  const buffer = file?.buffer;
+  if (!buffer?.length) return file;
+  file.sha256 = sha256Buffer(buffer);
+  file.image_hash = file.sha256;
+  file.clip_hash = file.sha256;
+  // Never pHash an MP4 container. Optional near-dupe uses the hero keyframe later.
+  file.phash = null;
+  return file;
+}
+
 export async function perceptualHash(buffer) {
   const sharp = (await import('sharp')).default;
   const raw = await sharp(buffer, { failOn: 'none' })

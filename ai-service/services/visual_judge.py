@@ -23,7 +23,7 @@ from openai import OpenAI
 from PIL import Image
 
 from logging_config import agent_log, garment_name
-from services.cropper import managed_media_path
+from services.cropper import first_chip_path, managed_media_path
 
 logger = logging.getLogger("fit_stealer.judge")
 
@@ -245,9 +245,8 @@ def _baseten_client() -> OpenAI:
 
 
 def chip_jpeg_bytes(chip: str | Path | bytes | None, garment: dict[str, Any] | None = None) -> bytes | None:
-    """Load chip JPEG from garment.chip_key, a path, raw bytes, or base64."""
-    key = (garment or {}).get("chip_key")
-    managed = managed_media_path(key if isinstance(key, str) else None)
+    """Load chip JPEG from garment.chip_key / alt_chip_key, a path, raw bytes, or base64."""
+    managed = first_chip_path(garment)
     if managed:
         return prepare_jpeg_bytes(managed.read_bytes())
     if isinstance(chip, (bytes, bytearray)):

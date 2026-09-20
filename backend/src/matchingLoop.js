@@ -36,6 +36,12 @@ export function reformulateGarment(garment) {
   return { ...garment, search_query: rotated[0], queries: rotated };
 }
 
+export function withAltChip(garment) {
+  const alt = garment?.alt_chip_key;
+  if (!alt || typeof alt !== 'string') return garment;
+  return { ...garment, chip_key: alt };
+}
+
 export function mergeBrowse(catalog, browsed, limit = 16) {
   const seen = new Set();
   const out = [];
@@ -102,16 +108,22 @@ async function runMatchLoop(garments, jobId, step, tools) {
         const label = item.garment?.category || item.garment?.id || 'item';
         try {
           const extra = await tools.retrieve(reformulateGarment(item.garment), jobId);
-          if (!extra?.length) {
+          if (extra?.length) {
+            item.candidates = mergeBrowse(item.candidates, extra);
+          } else {
             logger.info(jobMsg(jobId, `source — ${label}: reformulate returned nothing new`));
-            return;
           }
-          item.candidates = mergeBrowse(item.candidates, extra);
-          const again = await tools.judge(item.garment, item.candidates, jobId);
+          const hasAlt = Boolean(item.garment?.alt_chip_key);
+          if (!extra?.length && !hasAlt) return;
+          const judgeGarment = hasAlt ? withAltChip(item.garment) : item.garment;
+          const again = await tools.judge(judgeGarment, item.candidates, jobId);
           item.visual_scores = again.visual_scores || [];
           item.best = again.best ?? item.best;
           logger.info(
-            jobMsg(jobId, `source — ${label}: reformulate merged ${extra.length}, visual ${item.best ?? 'none'}`),
+            jobMsg(
+              jobId,
+              `source — ${label}: reformulate merged ${extra?.length || 0}${hasAlt ? ' + alt chip' : ''}, visual ${item.best ?? 'none'}`,
+            ),
           );
         } catch (error) {
           logger.warn(jobMsg(jobId, `source — ${label}: reformulate failed`));
@@ -128,7 +140,8 @@ async function runMatchLoop(garments, jobId, step, tools) {
       weak.map(async (item) => {
         const label = item.garment?.category || item.garment?.id || 'item';
         try {
-          const browsed = await tools.browse(item.garment, jobId);
+          const browseGarment = item.garment?.alt_chip_key ? withAltChip(item.garment) : item.garment;
+          const browsed = await tools.browse(browseGarment, jobId);
           if (!browsed?.length) {
             logger.info(jobMsg(jobId, `browse — ${label}: no reverse-image listings`));
             return;

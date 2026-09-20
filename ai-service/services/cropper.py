@@ -16,7 +16,7 @@ from pathlib import Path
 import logging
 import re
 
-from PIL import Image
+from PIL import Image, ImageFilter
 
 from logging_config import agent_log
 
@@ -42,6 +42,20 @@ def managed_media_path(raw: str | None) -> Path | None:
     if MANAGED_TEMP_MARK not in str(path).lower():
         return None
     return path
+
+
+def first_chip_path(garment: dict | None) -> Path | None:
+    """Prefer chip_key, then the video alt angle. Never a raw clip path."""
+    garment = garment or {}
+    for key in ("chip_key", "alt_chip_key"):
+        raw = garment.get(key)
+        managed = managed_media_path(raw if isinstance(raw, str) else None)
+        if managed is None:
+            continue
+        if managed.suffix.lower() in {".mp4", ".mov", ".webm", ".mkv", ".m4v", ".avi"}:
+            continue
+        return managed
+    return None
 
 
 def prepare_image_for_see(src_path: str, dest_path: str, max_edge: int = MAX_EDGE) -> str:
@@ -94,10 +108,174 @@ def pad_pixel_box(
     )
 
 
+def chip_sharpness(image: Image.Image) -> float:
+    """Laplacian-style variance of a chip. Higher is sharper."""
+    edges = image.convert("L").filter(ImageFilter.FIND_EDGES)
+    hist = edges.histogram()
+    total = sum(hist) or 1
+    mean = sum(index * count for index, count in enumerate(hist)) / total
+    return float(sum(((index - mean) ** 2) * count for index, count in enumerate(hist)) / total)
+
+
+def chip_sharpness_path(path: str) -> float:
+    try:
+        with Image.open(path) as image:
+            return chip_sharpness(image)
+    except Exception:
+        return 0.0
+
+
+def _frame_index(value) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sharpest_frame(frames: list[dict]) -> dict | None:
+    best = None
+    best_score = float("-inf")
+    for frame in frames or []:
+        try:
+            score = float(frame.get("sharpness") or 0)
+        except (TypeError, ValueError):
+            score = 0.0
+        if score > best_score:
+            best_score = score
+            best = frame
+    return best
+
+
+def _managed_frame_path(frame: dict | None) -> str | None:
+    if not frame:
+        return None
+    managed = managed_media_path(str(frame.get("path") or ""))
+    return str(managed) if managed else None
+
+
+def _log_video_crop_fallback(garment: dict, reason: str, used_index: int | None) -> None:
+    logger.warning(
+        "crop — video.crop_fallback garment=%s reason=%s requested=%s used=%s",
+        garment.get("id"),
+        reason,
+        garment.get("source_frame_index"),
+        used_index,
+    )
+    try:
+        import sentry_sdk
+
+        sentry_sdk.capture_message("video.crop_fallback", level="warning")
+    except Exception:
+        pass
+
+
+def crop_video_garments(
+    garments: list[dict],
+    frames: list[dict],
+    output_dir: str,
+    on_fallback=None,
+) -> list[dict]:
+    """Crop each video garment from the frame named by source_frame_index.
+
+    Missing or out-of-range source_frame_index falls back to the sharpest kept
+    frame and marks crop_fallback. A second usable box on another frame is
+    cropped as alt_chip_key; the sharper chip becomes chip_key for SeeChip.
+    Coverage skip still leaves the garment for text search.
+    """
+    if not garments:
+        return garments
+    if not frames:
+        return [dict(item) for item in garments]
+
+    by_index: dict[int, dict] = {}
+    for frame in frames or []:
+        index = _frame_index(frame.get("index"))
+        if index is not None:
+            by_index[index] = frame
+
+    notify = on_fallback or _log_video_crop_fallback
+    updated = []
+    for garment in garments:
+        g = dict(garment)
+        requested = _frame_index(g.get("source_frame_index"))
+        frame = by_index.get(requested) if requested is not None else None
+        used_fallback = frame is None
+        if used_fallback:
+            frame = _sharpest_frame(frames)
+        frame_path = _managed_frame_path(frame)
+        used_index = _frame_index(frame.get("index")) if frame else None
+
+        if frame_path is None:
+            g["chip_key"] = g.get("chip_key") or ""
+            g["alt_chip_key"] = g.get("alt_chip_key") or ""
+            if used_fallback:
+                g["crop_fallback"] = True
+                notify(g, "no_usable_frame", used_index)
+            updated.append(g)
+            continue
+
+        if used_fallback:
+            g["crop_fallback"] = True
+            notify(g, "missing_or_oor_source_frame", used_index)
+
+        primary = crop_garments(frame_path, [g], output_dir)[0]
+        g.update(primary)
+
+        alt_chips: list[dict] = []
+        for alt in g.get("alt_frames") or []:
+            alt_index = _frame_index(alt.get("source_frame_index") if isinstance(alt, dict) else None)
+            alt_bbox = alt.get("bbox") if isinstance(alt, dict) else None
+            if alt_index is None or alt_index == requested:
+                continue
+            if not alt_bbox or len(alt_bbox) != 4:
+                continue
+            alt_path = _managed_frame_path(by_index.get(alt_index))
+            if not alt_path:
+                continue
+            alt_garment = dict(g)
+            alt_garment["bbox"] = alt_bbox
+            alt_garment["source_frame_index"] = alt_index
+            alt_cropped = crop_garments(alt_path, [alt_garment], output_dir, name_suffix="-alt")[0]
+            alt_key = alt_cropped.get("chip_key") or ""
+            if not alt_key:
+                continue
+            alt_chips.append({
+                "chip_key": alt_key,
+                "bbox": alt_bbox,
+                "source_frame_index": alt_index,
+                "sharpness": chip_sharpness_path(alt_key),
+            })
+
+        primary_key = g.get("chip_key") or ""
+        if alt_chips:
+            best_alt = max(alt_chips, key=lambda item: item["sharpness"])
+            if not primary_key or best_alt["sharpness"] > chip_sharpness_path(primary_key):
+                if primary_key:
+                    g["alt_chip_key"] = primary_key
+                elif len(alt_chips) > 1:
+                    second = sorted(alt_chips, key=lambda item: item["sharpness"], reverse=True)[1]
+                    g["alt_chip_key"] = second["chip_key"]
+                else:
+                    g["alt_chip_key"] = ""
+                g["chip_key"] = best_alt["chip_key"]
+                g["bbox"] = best_alt["bbox"]
+                g["source_frame_index"] = best_alt["source_frame_index"]
+            else:
+                g["alt_chip_key"] = best_alt["chip_key"]
+        else:
+            g.setdefault("alt_chip_key", "")
+
+        updated.append(g)
+    return updated
+
+
 def crop_garments(
     image_path: str,
     garments: list[dict],
     output_dir: str,
+    name_suffix: str = "",
 ) -> list[dict]:
     """
     Crop bounding-box chips from a source image for each garment.
@@ -215,7 +393,8 @@ def crop_garments(
         chip = img.crop((x_min, y_min, x_max, y_max))
         garment_id = str(g.get("id") or "garment")
         safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "", garment_id) or "garment"
-        chip_path = out_path / f"{safe_id}.jpg"
+        suffix = re.sub(r"[^a-zA-Z0-9._-]+", "", name_suffix or "")
+        chip_path = out_path / f"{safe_id}{suffix}.jpg"
         chip.save(chip_path, "JPEG", quality=90)
 
         g["chip_key"] = str(chip_path)

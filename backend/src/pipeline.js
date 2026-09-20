@@ -9,7 +9,7 @@ import {
   releaseUpload,
   scrubChipKeys,
 } from './cleanup.js';
-import { downscaleUpload } from './downscale.js';
+import { attachClipHash, downscaleUpload } from './downscale.js';
 import { getCachedIdentify, setCachedIdentify } from './identifyCache.js';
 import { createJob, updateJob } from './jobs.js';
 import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
@@ -83,8 +83,10 @@ function normalizeGarment(garment, index) {
     confidence: Number(garment.confidence ?? 0),
     bbox: Array.isArray(garment.bbox) ? garment.bbox : [0, 0, 0, 0],
     chip_key: garment.chip_key || '',
+    alt_chip_key: garment.alt_chip_key || '',
     accessibility_line: garment.accessibility_line || garment.description || '',
     source_frame_index: garment.source_frame_index ?? null,
+    crop_fallback: Boolean(garment.crop_fallback),
   };
 }
 
@@ -159,6 +161,24 @@ function matchingFields(garments, extra = {}) {
   };
 }
 
+function cachedIdentifyPayload(perceived, items, extra = {}) {
+  const keyframes = perceived?.keyframes || extra.keyframes || [];
+  return {
+    outfit_summary: perceived?.outfit_summary || extra.outfit_summary || '',
+    items: items || [],
+    keyframes,
+    thumbnail_url: extra.thumbnail_url || keyframes[0] || undefined,
+    frame_count: extra.frame_count ?? perceived?.frame_count ?? 0,
+    selected_frames: extra.selected_frames ?? perceived?.selected_frames ?? 0,
+    clip_duration: extra.clip_duration ?? perceived?.duration ?? null,
+  };
+}
+
+function cacheIdentifyResult(imageHash, phash, mocks, usedMock, payload) {
+  if (!imageHash || usedMock || mocks.size > 0) return;
+  setCachedIdentify(imageHash, payload, phash);
+}
+
 function commit(jobId, ctx, patch) {
   if (ctx.cancelled) return null;
   const next = updateJob(jobId, patch);
@@ -228,6 +248,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
   let seeMs = null;
   let frameCount = 0;
   let selectedFrames = 0;
+  let clipDuration = null;
 
   return Sentry.startSpan(
     { name: 'identify', op: 'identify', attributes: { job_id: jobId, origin, media_type: mediaType } },
@@ -250,8 +271,13 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     logger.info(jobMsg(jobId, `ingest — preparing ${mediaType}`));
     if (mediaType === 'image') {
       await downscaleUpload(file, jobId);
+    } else if (mediaType === 'video') {
+      attachClipHash(file);
+      if (file?.image_hash) {
+        logger.info(jobMsg(jobId, `ingest — clip_hash ${String(file.image_hash).slice(0, 12)}`));
+      }
     }
-    const imageHash = mediaType === 'image' ? file?.image_hash || null : null;
+    const imageHash = file?.image_hash || null;
     const phash = mediaType === 'image' ? file?.phash || null : null;
     try {
       Sentry.getActiveSpan()?.setAttribute('image_hash', imageHash || '');
@@ -285,6 +311,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         outfit_summary: cached.outfit_summary || '',
         items: cached.items || [],
         steps: ctx.steps,
+        keyframes: cached.keyframes || [],
+        thumbnail_url: cached.thumbnail_url || cached.keyframes?.[0] || undefined,
       });
       return;
     }
@@ -309,6 +337,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
             seeMs = Date.now() - seeStarted;
             frameCount = Number(perceived?.frame_count || 0);
             selectedFrames = Number(perceived?.selected_frames || perceived?.keyframes?.length || 0);
+            clipDuration = Number.isFinite(Number(perceived?.duration)) ? Number(perceived.duration) : clipDuration;
           } else {
             throw ingestError;
           }
@@ -317,6 +346,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
           ingestMs = Date.now() - ingestStarted;
           frameCount = Number(ingested?.frame_count || 0);
           selectedFrames = Number(ingested?.selected_frames || ingested?.image_paths?.length || 0);
+          clipDuration = Number.isFinite(Number(ingested?.duration)) ? Number(ingested.duration) : clipDuration;
           temps.push(...collectTempPaths(ingested || {}));
           const keyframes = ingested?.keyframes || [];
           commit(jobId, ctx, {
@@ -338,6 +368,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
             frame_count: frameCount,
             selected_frames: selectedFrames,
             ingest_ms: ingestMs,
+            clip_duration: clipDuration,
+            image_hash: imageHash,
           });
           if (!ingested?.image_paths?.length) {
             perceived = {
@@ -346,6 +378,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
               keyframes,
               frame_count: frameCount,
               selected_frames: selectedFrames,
+              duration: clipDuration,
             };
           } else {
             step(jobId, ctx, 'seeing', 'reading the outfit across frames', {
@@ -408,6 +441,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
           selected_frames: selectedFrames || perceived?.selected_frames || 0,
           ingest_ms: ingestMs,
           see_ms: seeMs,
+          clip_duration: clipDuration ?? perceived?.duration ?? null,
         }),
       });
       // #region agent log
@@ -424,21 +458,30 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         keyframes: perceived?.keyframes || [],
         thumbnail_url: perceived?.keyframes?.[0] || undefined,
       });
-      if (imageHash && mocks.size === 0) {
-        setCachedIdentify(
-          imageHash,
-          {
-            outfit_summary: perceived?.outfit_summary || '',
-            items: [],
-          },
-          phash,
-        );
-      }
+      cacheIdentifyResult(
+        imageHash,
+        phash,
+        mocks,
+        false,
+        cachedIdentifyPayload(perceived, [], {
+          frame_count: frameCount || perceived?.frame_count || 0,
+          selected_frames: selectedFrames || perceived?.selected_frames || 0,
+          clip_duration: clipDuration ?? perceived?.duration ?? null,
+        }),
+      );
       return;
     }
 
     const names = garments.map((garment) => garment.category).join(', ');
     logger.info(jobMsg(jobId, `see — ${garments.length} clothes: ${names}`));
+    for (const garment of garments) {
+      if (!garment?.crop_fallback) continue;
+      Sentry.logger.warn('video.crop_fallback', {
+        job_id: jobId,
+        garment_id: garment.id,
+        source_frame_index: garment.source_frame_index,
+      });
+    }
     temps.push(...collectTempPaths({ garments }));
 
     step(jobId, ctx, 'detailing', 'reading each garment up close', {
@@ -492,6 +535,17 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         keyframes: perceived?.keyframes || [],
         thumbnail_url: perceived?.keyframes?.[0] || undefined,
       });
+      cacheIdentifyResult(
+        imageHash,
+        phash,
+        mocks,
+        false,
+        cachedIdentifyPayload(perceived, [], {
+          frame_count: frameCount || perceived?.frame_count || 0,
+          selected_frames: selectedFrames || perceived?.selected_frames || 0,
+          clip_duration: clipDuration ?? perceived?.duration ?? null,
+        }),
+      );
       return;
     }
 
@@ -549,6 +603,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       selected_frames: selectedFrames || perceived?.selected_frames || 0,
       ingest_ms: ingestMs,
       see_ms: seeMs,
+      clip_duration: clipDuration ?? perceived?.duration ?? null,
     });
     Sentry.logger.info('identify.done', {
       job_id: jobId,
@@ -576,6 +631,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         span?.setAttribute('selected_frames', doneFields.selected_frames);
         if (ingestMs != null) span?.setAttribute('ingest_ms', ingestMs);
         if (seeMs != null) span?.setAttribute('see_ms', seeMs);
+        if (doneFields.clip_duration != null) span?.setAttribute('clip_duration', doneFields.clip_duration);
       }
     } catch {
       // Tracing attributes are optional.
@@ -610,16 +666,17 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     });
     // #endregion
     const items = scrubChipKeys(ranked);
-    if (!usedMock && mocks.size === 0 && imageHash) {
-      setCachedIdentify(
-        imageHash,
-        {
-          outfit_summary: perceived?.outfit_summary || '',
-          items,
-        },
-        phash,
-      );
-    }
+    cacheIdentifyResult(
+      imageHash,
+      phash,
+      mocks,
+      usedMock,
+      cachedIdentifyPayload(perceived, items, {
+        frame_count: frameCount || perceived?.frame_count || 0,
+        selected_frames: selectedFrames || perceived?.selected_frames || 0,
+        clip_duration: clipDuration ?? perceived?.duration ?? null,
+      }),
+    );
     commit(jobId, ctx, {
       status: 'done',
       items,
