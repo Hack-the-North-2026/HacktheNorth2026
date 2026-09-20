@@ -254,7 +254,7 @@ export default function JobScreen() {
       >
         <View style={styles.heroWrap}>
           {showVideoHero ? (
-            <JobHeroVideo uri={preview} />
+            <JobHeroVideo uri={preview!} />
           ) : heroUri ? (
             <Image
               source={{ uri: heroUri }}

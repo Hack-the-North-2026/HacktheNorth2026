@@ -1,14 +1,13 @@
 import React, { useRef, useState } from 'react';
-import { StyleSheet, Text, View, Animated, Alert, Platform, Pressable, Linking, Dimensions } from 'react-native';
+import { StyleSheet, Text, View, Image, Animated, Alert, Platform, Pressable, Linking, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob, getIdentifyJob, isVideoUri } from '../lib/api';
-import { IDENTIFY_POLL_DEADLINE_MS, identifyStatusCopy, timeoutIdentifyCopy } from '../lib/identifyCopy';
+import { IDENTIFY_POLL_DEADLINE_MS, timeoutIdentifyCopy } from '../lib/identifyCopy';
 import { setJobPreview } from '../lib/resultStore';
 import { IdentifyResult, IdentifyStatus } from '../lib/types';
-import { CaptureButton } from '../components/CaptureButton';
 import { InspectingView } from '../components/InspectingView';
 import { RippleTransition } from '../components/RippleTransition';
 import {
@@ -18,21 +17,25 @@ import {
   SURFACE,
   BORDER,
   ACCENT,
-  FONT_MEDIUM,
   FONT_SEMIBOLD,
-  FONT_SERIF_SEMIBOLD,
-  FS_LG,
-  FS_MD,
+  FONT_BOLD,
+  FONT_EXTRABOLD,
+  FONT_SERIF_ITALIC,
   FS_SM,
 } from '../lib/theme';
 
 type Phase = 'idle' | 'scanning' | 'revealing';
 
 const POLL_MS = 400;
-const POLL_DEADLINE_MS = 90_000;
-const CIRCLE_SIZE = 200;
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const RIPPLE_ORIGIN = { x: SCREEN_W / 2, y: SCREEN_H / 2 };
+
+const HERO = require('../assets/steal-hero.webp');
+const HERO_ASPECT = 991 / 2000;
+const HERO_SCALE = 1.25;
+const HERO_W = SCREEN_W * HERO_SCALE;
+const DISPLAY = Math.min(Math.round(SCREEN_W * 0.165), 68);
+const DISPLAY_FIT = Math.min(Math.round(SCREEN_W * 0.2), 82);
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -190,31 +193,63 @@ export default function HomeScreen() {
   return (
     <View style={styles.container} >
       <Animated.View style={[styles.layer, { opacity: idleOpacity, pointerEvents: phase === 'idle' ? 'auto' : 'none' }]}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Recently searched"
-          onPress={() => router.push('/recent')}
-          style={[styles.recentButton, { top: Math.max(insets.top, 16) + 8 }]}
-        >
-          <Ionicons name="time-outline" size={16} color={TEXT_PRIMARY} />
-          <Text style={styles.recentLabel}>Recent</Text>
-        </Pressable>
-        <View style={styles.captionWrap}>
-          <Text style={styles.caption}>Tap to find this fit</Text>
-          <Text style={styles.subCaption}>Hold to use the camera</Text>
-        </View>
-        <View style={styles.buttonWrap}>
-          <CaptureButton size={CIRCLE_SIZE} disabled={phase !== 'idle'} onPress={pickFromLibrary} onLongPress={takePhoto} />
-        </View>
-        {Platform.OS === 'android' && (
+        <Image
+          source={HERO}
+          style={[
+            styles.hero,
+            {
+              width: HERO_W,
+              height: HERO_W / HERO_ASPECT,
+              left: (SCREEN_W - HERO_W) / 2,
+              bottom: insets.bottom - 52,
+            },
+          ]}
+          resizeMode="contain"
+        />
+
+        <View style={[styles.topBar, { top: Math.max(insets.top, 16) + 8 }]}>
+          <Text style={styles.wordmark}>Fit Stealer</Text>
           <Pressable
-            style={styles.overlayButton}
-            onPress={openAccessibilitySettings}
-            accessibilityLabel="Set up overlay bubble"
-            accessibilityHint="Opens Accessibility Settings to enable the Fit Stealer overlay">
-            <Text style={styles.overlayButtonText}>⚙ Setup Overlay Bubble</Text>
+            accessibilityRole="button"
+            accessibilityLabel="Recently searched"
+            onPress={() => router.push('/recent')}
+            style={styles.recentButton}
+          >
+            <Ionicons name="time-outline" size={15} color={TEXT_PRIMARY} />
+            <Text style={styles.recentLabel}>Recent</Text>
           </Pressable>
-        )}
+        </View>
+
+        <View style={[styles.display, { top: Math.max(insets.top, 16) + 64 }]}>
+          <Text style={styles.displayLine}>STEAL</Text>
+          <Text style={styles.displayLine}>THE</Text>
+          <Text style={styles.displayFit}>fit.</Text>
+        </View>
+
+        <View style={[styles.foot, { bottom: insets.bottom + 20 }]}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Steal a fit now"
+            accessibilityHint="Pick a screenshot, or press and hold to use the camera"
+            disabled={phase !== 'idle'}
+            onPress={pickFromLibrary}
+            onLongPress={takePhoto}
+            delayLongPress={300}
+            style={({ pressed }) => [styles.cta, pressed && styles.ctaPressed]}
+          >
+            <Text style={styles.ctaText}>Steal a fit now</Text>
+            <Ionicons name="arrow-forward" size={20} color="#FBF3E7" />
+          </Pressable>
+          <Text style={styles.hint}>or press &amp; hold to shoot</Text>
+          {Platform.OS === 'android' && (
+            <Pressable
+              onPress={openAccessibilitySettings}
+              accessibilityLabel="Set up overlay bubble"
+              accessibilityHint="Opens Accessibility Settings to enable the Fit Stealer overlay">
+              <Text style={styles.overlayLink}>⚙ Set up overlay bubble</Text>
+            </Pressable>
+          )}
+        </View>
       </Animated.View>
 
       <Animated.View style={[StyleSheet.absoluteFill, { opacity: scanOpacity, pointerEvents: phase === 'idle' ? 'none' : 'auto' }]}>
@@ -248,18 +283,32 @@ const styles = StyleSheet.create({
   },
   layer: {
     ...StyleSheet.absoluteFill,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 24,
   },
-  recentButton: {
+  hero: {
     position: 'absolute',
+    zIndex: 0,
+  },
+  topBar: {
+    position: 'absolute',
+    left: 24,
     right: 20,
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    zIndex: 2,
+  },
+  wordmark: {
+    color: TEXT_PRIMARY,
+    fontSize: 16,
+    fontFamily: FONT_BOLD,
+    letterSpacing: 0.1,
+  },
+  recentButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    paddingHorizontal: 13,
+    paddingVertical: 8,
     borderRadius: 999,
     backgroundColor: SURFACE,
     borderWidth: 1,
@@ -270,38 +319,70 @@ const styles = StyleSheet.create({
     fontSize: FS_SM,
     fontFamily: FONT_SEMIBOLD,
   },
-  buttonWrap: {
-    marginTop: 40,
+  display: {
+    position: 'absolute',
+    left: 24,
+    zIndex: 1,
   },
-  captionWrap: {
-    alignItems: 'center',
-  },
-  caption: {
-    fontSize: FS_LG,
-    fontFamily: FONT_SERIF_SEMIBOLD,
+  displayLine: {
     color: TEXT_PRIMARY,
-    textAlign: 'center',
+    fontFamily: FONT_EXTRABOLD,
+    fontSize: DISPLAY,
+    lineHeight: DISPLAY * 0.98,
+    letterSpacing: -1,
+  },
+  displayFit: {
+    color: ACCENT,
+    fontFamily: FONT_SERIF_ITALIC,
+    fontSize: DISPLAY_FIT,
+    lineHeight: DISPLAY_FIT * 1.02,
+    marginTop: 2,
+    marginLeft: -2,
+  },
+  foot: {
+    position: 'absolute',
+    left: 20,
+    right: 20,
+    zIndex: 2,
+    alignItems: 'center',
+    gap: 12,
+  },
+  cta: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    paddingVertical: 20,
+    borderRadius: 30,
+    backgroundColor: ACCENT,
+    shadowColor: ACCENT,
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 8,
+  },
+  ctaPressed: {
+    transform: [{ scale: 0.98 }],
+    backgroundColor: '#8a5c36',
+  },
+  ctaText: {
+    color: '#FBF3E7',
+    fontSize: 19,
+    fontFamily: FONT_BOLD,
     letterSpacing: 0.2,
   },
-  subCaption: {
-    fontSize: FS_MD,
-    fontFamily: FONT_MEDIUM,
+  hint: {
     color: TEXT_MUTED,
-    marginTop: 8,
+    fontSize: FS_SM,
+    fontFamily: FONT_SEMIBOLD,
+    letterSpacing: 0.2,
   },
-  overlayButton: {
-    marginTop: 28,
-    paddingVertical: 11,
-    paddingHorizontal: 22,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: 'rgba(156,107,65,0.35)',
-    backgroundColor: 'rgba(156,107,65,0.10)',
-  },
-  overlayButtonText: {
+  overlayLink: {
     color: ACCENT,
     fontSize: FS_SM,
     fontFamily: FONT_SEMIBOLD,
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
+    marginTop: 2,
   },
 });
