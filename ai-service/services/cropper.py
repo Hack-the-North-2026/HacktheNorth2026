@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import logging
-import uuid
+import re
 
 from PIL import Image
 
@@ -26,6 +26,22 @@ MAX_EDGE = 1280
 BBOX_PAD_RATIO = 0.10
 MAX_CHIP_COVERAGE = 0.85
 MIN_CHIP_PX = 32
+MANAGED_TEMP_MARK = "fit-stealer"
+
+
+def managed_media_path(raw: str | None) -> Path | None:
+    """Resolve a chip/upload path only if it lives under a Fit Stealer temp dir."""
+    if not raw or not isinstance(raw, str) or len(raw) >= 1024:
+        return None
+    try:
+        path = Path(raw).resolve()
+    except OSError:
+        return None
+    if not path.is_file():
+        return None
+    if MANAGED_TEMP_MARK not in str(path).lower():
+        return None
+    return path
 
 
 def prepare_image_for_see(src_path: str, dest_path: str, max_edge: int = MAX_EDGE) -> str:
@@ -198,8 +214,8 @@ def crop_garments(
 
         chip = img.crop((x_min, y_min, x_max, y_max))
         garment_id = str(g.get("id") or "garment")
-        chip_filename = f"{garment_id}-{uuid.uuid4().hex[:8]}.jpg"
-        chip_path = out_path / chip_filename
+        safe_id = re.sub(r"[^a-zA-Z0-9._-]+", "", garment_id) or "garment"
+        chip_path = out_path / f"{safe_id}.jpg"
         chip.save(chip_path, "JPEG", quality=90)
 
         g["chip_key"] = str(chip_path)

@@ -13,7 +13,7 @@ AI_SERVICE = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(AI_SERVICE))
 
 from services.baseten_vlm import analyze_frames_with_vlm, stable_garment_id  # noqa: E402
-from services.cropper import MAX_CHIP_COVERAGE, crop_garments, pad_pixel_box  # noqa: E402
+from services.cropper import MAX_CHIP_COVERAGE, crop_garments, managed_media_path, pad_pixel_box  # noqa: E402
 from services.query_normalize import canonicalize_query  # noqa: E402
 from services.shopify_filter import search_shopify_catalog  # noqa: E402
 
@@ -84,6 +84,18 @@ class CropperStageATests(unittest.TestCase):
             self.assertEqual(result[0]["chip_key"], "")
             self.assertGreaterEqual(1.0, MAX_CHIP_COVERAGE)
 
+
+    def test_managed_media_path_rejects_unrelated_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            other = Path(tmp) / "secret.jpg"
+            other.write_bytes(b"not-a-chip")
+            self.assertIsNone(managed_media_path(str(other)))
+        with tempfile.TemporaryDirectory(prefix="fit-stealer-") as tmp:
+            chip = Path(tmp) / "jacket.jpg"
+            chip.write_bytes(b"x" * 40)
+            self.assertEqual(managed_media_path(str(chip)), chip.resolve())
+        self.assertIsNone(managed_media_path("/etc/passwd"))
+
     def test_padded_crop_is_larger_than_raw_bbox(self):
         with tempfile.TemporaryDirectory() as tmp:
             image_path = Path(tmp) / "scene.jpg"
@@ -98,6 +110,7 @@ class CropperStageATests(unittest.TestCase):
             result = crop_garments(str(image_path), garments, tmp)
             chip = Path(result[0]["chip_key"])
             self.assertTrue(chip.is_file())
+            self.assertEqual(chip.name, "shirt-05-05-15-15.jpg")
             with Image.open(chip) as cropped:
                 self.assertEqual(cropped.size, (120, 120))
 
@@ -150,6 +163,7 @@ class SeeTemperatureTests(unittest.TestCase):
             result = analyze_frames_with_vlm([str(image_path)])
         kwargs = openai_cls.return_value.chat.completions.create.call_args.kwargs
         self.assertEqual(kwargs["temperature"], 0)
+        self.assertEqual(kwargs["seed"], 0)
         garment = result["garments"][0]
         self.assertEqual(garment["id"], stable_garment_id("jacket", [0.12, 0.20, 0.71, 0.88]))
         self.assertNotEqual(garment["id"], "random-from-model")

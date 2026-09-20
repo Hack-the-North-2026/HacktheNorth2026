@@ -5,7 +5,11 @@ import { agentLog, jobMsg, logger } from './logger.js';
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 60_000);
 const SEE_CHIP_TIMEOUT_MS = Number(process.env.SEE_CHIP_TIMEOUT_MS || 45_000);
-const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || 50_000);
+const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || 70_000);
+const RETRIEVE_TIMEOUT_MS = Number(process.env.RETRIEVE_TIMEOUT_MS || 25_000);
+const JUDGE_TIMEOUT_MS = Number(process.env.JUDGE_TIMEOUT_MS || 25_000);
+const BROWSE_TIMEOUT_MS = Number(process.env.BROWSE_TIMEOUT_MS || 18_000);
+const RANK_TIMEOUT_MS = Number(process.env.RANK_TIMEOUT_MS || 20_000);
 
 let cachedSourceMode;
 
@@ -35,11 +39,15 @@ async function parseJson(response) {
 }
 
 function jobHeaders(jobId, extra = {}) {
-  return jobId ? { ...extra, 'x-job-id': jobId } : extra;
+  const headers = jobId ? { ...extra, 'x-job-id': jobId } : { ...extra };
+  const toolKey = process.env.TOOL_SERVER_SECRET;
+  if (toolKey) headers['x-tool-key'] = toolKey;
+  return headers;
 }
 
-export async function seeAndCrop(file, jobId) {
-  const url = `${AI_SERVICE_URL()}/api/identify`;
+export async function seeAndCrop(file, jobId, { detail = true } = {}) {
+  const qs = detail ? '' : '?detail=0';
+  const url = `${AI_SERVICE_URL()}/api/identify${qs}`;
   const response = await fetch(url, {
     method: 'POST',
     body: imageFormData(file),
@@ -114,10 +122,17 @@ export async function seeChips(garments, jobId) {
   return Array.isArray(data.garments) ? data.garments : garments;
 }
 
-export async function perceive(file, jobId) {
-  logger.info(jobMsg(jobId, 'see — sending photo to AI (Baseten scene + crop + chip)'));
+export async function perceive(file, jobId, { detail = true } = {}) {
+  logger.info(
+    jobMsg(
+      jobId,
+      detail
+        ? 'see — sending photo to AI (Baseten scene + crop + chip)'
+        : 'see — sending photo to AI (Baseten scene + crop)',
+    ),
+  );
   try {
-    return await seeAndCrop(file, jobId);
+    return await seeAndCrop(file, jobId, { detail });
   } catch (error) {
     if (error.name === 'TimeoutError' || error.name === 'AbortError') throw error;
     if (error.status && error.status !== 404) throw error;
@@ -131,11 +146,13 @@ export async function perceive(file, jobId) {
         logger.warn(cropError instanceof Error ? cropError.message : String(cropError));
       }
     }
-    try {
-      seen.garments = await seeChips(seen.garments, jobId);
-    } catch (chipError) {
-      logger.warn(jobMsg(jobId, 'see-chip — failed, using scene descriptions'));
-      logger.warn(chipError instanceof Error ? chipError.message : String(chipError));
+    if (detail) {
+      try {
+        seen.garments = await seeChips(seen.garments, jobId);
+      } catch (chipError) {
+        logger.warn(jobMsg(jobId, 'see-chip — failed, using scene descriptions'));
+        logger.warn(chipError instanceof Error ? chipError.message : String(chipError));
+      }
     }
     return seen;
   }
@@ -166,6 +183,10 @@ async function postJson(pathname, body, timeoutMs, jobId) {
   return { response, data };
 }
 
+export function resetSourceModeCache() {
+  cachedSourceMode = undefined;
+}
+
 export async function resolveSourceMode(forceMock) {
   if (forceMock) return 'mock';
   if (cachedSourceMode) return cachedSourceMode;
@@ -177,6 +198,15 @@ export async function resolveSourceMode(forceMock) {
     });
     const data = await parseJson(response);
     const endpoints = Array.isArray(data.endpoints) ? data.endpoints : [];
+    if (
+      response.ok &&
+      endpoints.includes('/tools/retrieve') &&
+      endpoints.includes('/tools/judge') &&
+      endpoints.includes('/tools/rank')
+    ) {
+      cachedSourceMode = 'match-loop';
+      return cachedSourceMode;
+    }
     if (response.ok && endpoints.includes('/tools/source-rank')) {
       cachedSourceMode = 'source-rank';
       return cachedSourceMode;
@@ -192,6 +222,71 @@ export async function resolveSourceMode(forceMock) {
   cachedSourceMode = 'mock';
   logger.warn('source — AI source/rank tools are down; will use mock matches');
   return cachedSourceMode;
+}
+
+export async function retrieveCandidates(garment, jobId) {
+  const chip = chipPayload(garment);
+  const { response, data } = await postJson(
+    '/tools/retrieve',
+    { garment, chip },
+    RETRIEVE_TIMEOUT_MS,
+    jobId,
+  );
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `Retrieve failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  return Array.isArray(data.candidates) ? data.candidates : [];
+}
+
+export async function judgeCandidates(garment, candidates, jobId) {
+  const chip = chipPayload(garment);
+  const { response, data } = await postJson(
+    '/tools/judge',
+    { garment, candidates, chip },
+    JUDGE_TIMEOUT_MS,
+    jobId,
+  );
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `Judge failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  const visualScores = Array.isArray(data.visual_scores) ? data.visual_scores : [];
+  const best = Number.isFinite(Number(data.best)) ? Number(data.best) : null;
+  return { visual_scores: visualScores, best };
+}
+
+export async function browseCandidates(garment, jobId) {
+  const chip = chipPayload(garment);
+  const { response, data } = await postJson(
+    '/tools/browse',
+    { garment, chip },
+    BROWSE_TIMEOUT_MS,
+    jobId,
+  );
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `Browse failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  return Array.isArray(data.candidates) ? data.candidates : [];
+}
+
+export async function rankMatches(garment, candidates, visualScores, jobId) {
+  const { response, data } = await postJson(
+    '/tools/rank',
+    { garment, candidates, visual_scores: visualScores || [] },
+    RANK_TIMEOUT_MS,
+    jobId,
+  );
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `Rank failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  return Array.isArray(data.matches) ? data.matches : [];
 }
 
 export async function sourceAndRank(garment, jobId) {
@@ -210,8 +305,8 @@ export async function sourceAndRank(garment, jobId) {
   });
   // #endregion
 
-  if (mode === 'source-rank') {
-    logger.info(jobMsg(jobId, `source — ${label}: Shopify fan-out + rank`));
+  if (mode === 'source-rank' || mode === 'match-loop') {
+    logger.info(jobMsg(jobId, `source — ${label}: Shopify fan-out + rank (Browserbase if weak)`));
     const { response, data } = await postJson(
       '/tools/source-rank',
       { garment, chip },

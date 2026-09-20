@@ -7,23 +7,28 @@ score is high; this module never labels exact itself.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import os
+import socket
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import requests
 from openai import OpenAI
 from PIL import Image
 
 from logging_config import agent_log, garment_name
+from services.cropper import managed_media_path
 
 logger = logging.getLogger("fit_stealer.judge")
 
 EXACT_VISUAL_THRESHOLD = 0.82
+WEAK_VISUAL_THRESHOLD = 0.62
 MAX_PRODUCT_IMAGES = 8
 FETCH_TIMEOUT = 3.5
 MAX_BYTES = 8_000_000
@@ -82,8 +87,61 @@ Return one score object per product image.
 """
 
 
+def needs_reformulate(best: float | None) -> bool:
+    """True when catalog visual is similar-not-weak — retry with a sharper query."""
+    if best is None:
+        return False
+    try:
+        score = float(best)
+    except (TypeError, ValueError):
+        return False
+    return WEAK_VISUAL_THRESHOLD <= score < EXACT_VISUAL_THRESHOLD
+
+
+def is_public_http_url(url: str) -> bool:
+    """Reject localhost, private, link-local, and unresolvable hosts (SSRF)."""
+    if not isinstance(url, str):
+        return False
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host or host == "localhost":
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+        return bool(ip.is_global)
+    except ValueError:
+        pass
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            ip = ipaddress.ip_address(info[4][0])
+        except (TypeError, ValueError):
+            return False
+        if not ip.is_global:
+            return False
+    return True
+
+
 def encode_bytes_data_uri(data: bytes, mime: str = "image/jpeg") -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def best_visual_score(visual_scores: list[dict[str, Any]] | None) -> float | None:
+    """Highest 0–1 visual score, or None when the judge did not run."""
+    scores: list[float] = []
+    for row in visual_scores or []:
+        try:
+            scores.append(float(row.get("score")))
+        except (TypeError, ValueError):
+            continue
+    return max(scores) if scores else None
 
 
 def prepare_jpeg_bytes(data: bytes, max_edge: int = JUDGE_MAX_EDGE) -> bytes | None:
@@ -110,18 +168,23 @@ def prepare_jpeg_bytes(data: bytes, max_edge: int = JUDGE_MAX_EDGE) -> bytes | N
 
 
 def fetch_product_image(url: str, timeout: float = FETCH_TIMEOUT) -> bytes | None:
-    """Download one product image. Skip broken, huge, or non-image bodies."""
-    if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+    """Download one product image. Skip broken, huge, private, or non-image bodies."""
+    if not is_public_http_url(url):
         return None
+    headers = {
+        "Accept": "image/jpeg,image/png,image/webp,image/*;q=0.8",
+        "User-Agent": "FitStealer/1.0 (visual-judge)",
+    }
     try:
-        response = requests.get(
-            url,
-            timeout=timeout,
-            headers={
-                "Accept": "image/jpeg,image/png,image/webp,image/*;q=0.8",
-                "User-Agent": "FitStealer/1.0 (visual-judge)",
-            },
-        )
+        response = requests.get(url, timeout=timeout, headers=headers, allow_redirects=False)
+        if response.is_redirect or response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get("Location")
+            if not location:
+                return None
+            nxt = urljoin(url, location)
+            if not is_public_http_url(nxt):
+                return None
+            response = requests.get(nxt, timeout=timeout, headers=headers, allow_redirects=False)
         response.raise_for_status()
         content_type = (response.headers.get("Content-Type") or "").lower()
         if content_type.startswith("text/") or "json" in content_type:
@@ -136,27 +199,39 @@ def fetch_candidate_images(
     *,
     limit: int = MAX_PRODUCT_IMAGES,
 ) -> list[tuple[int, bytes]]:
-    """Return (original_index, jpeg_bytes) for candidates with a reachable image."""
+    """Return (original_index, jpeg_bytes). Keep fetching until `limit` succeed."""
     indexed = [
         (index, str(item.get("image_url") or ""))
         for index, item in enumerate(candidates)
         if item.get("image_url")
-    ][: max(1, limit)]
+    ]
     if not indexed:
         return []
-    prepared: list[tuple[int, bytes] | None] = [None] * len(indexed)
-    workers = min(FETCH_WORKERS, len(indexed))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(fetch_product_image, url): position
-            for position, (_index, url) in enumerate(indexed)
-        }
-        for future in as_completed(futures):
-            position = futures[future]
-            jpeg = future.result()
-            if jpeg:
-                prepared[position] = (indexed[position][0], jpeg)
-    return [item for item in prepared if item is not None]
+    want = max(1, limit)
+    collected: list[tuple[int, bytes]] = []
+    cursor = 0
+    while cursor < len(indexed) and len(collected) < want:
+        batch = indexed[cursor : cursor + FETCH_WORKERS]
+        cursor += len(batch)
+        prepared: list[tuple[int, bytes] | None] = [None] * len(batch)
+        workers = min(FETCH_WORKERS, len(batch))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {
+                pool.submit(fetch_product_image, url): position
+                for position, (_index, url) in enumerate(batch)
+            }
+            for future in as_completed(futures):
+                position = futures[future]
+                jpeg = future.result()
+                if jpeg:
+                    prepared[position] = (batch[position][0], jpeg)
+        for item in prepared:
+            if item is None:
+                continue
+            collected.append(item)
+            if len(collected) >= want:
+                break
+    return collected[:want]
 
 
 def _baseten_client() -> OpenAI:
@@ -172,18 +247,19 @@ def _baseten_client() -> OpenAI:
 def chip_jpeg_bytes(chip: str | Path | bytes | None, garment: dict[str, Any] | None = None) -> bytes | None:
     """Load chip JPEG from garment.chip_key, a path, raw bytes, or base64."""
     key = (garment or {}).get("chip_key")
-    if isinstance(key, str) and len(key) < 1024:
-        path = Path(key)
-        if path.is_file():
-            return prepare_jpeg_bytes(path.read_bytes())
+    managed = managed_media_path(key if isinstance(key, str) else None)
+    if managed:
+        return prepare_jpeg_bytes(managed.read_bytes())
     if isinstance(chip, (bytes, bytearray)):
         return prepare_jpeg_bytes(bytes(chip))
-    if isinstance(chip, Path) and chip.is_file():
-        return prepare_jpeg_bytes(chip.read_bytes())
+    if isinstance(chip, Path):
+        managed_chip = managed_media_path(str(chip))
+        if managed_chip:
+            return prepare_jpeg_bytes(managed_chip.read_bytes())
     if isinstance(chip, str) and chip:
-        possible = Path(chip)
-        if len(chip) < 1024 and possible.is_file():
-            return prepare_jpeg_bytes(possible.read_bytes())
+        managed_chip = managed_media_path(chip)
+        if managed_chip:
+            return prepare_jpeg_bytes(managed_chip.read_bytes())
         try:
             return prepare_jpeg_bytes(base64.b64decode(chip, validate=False))
         except Exception:
@@ -213,7 +289,7 @@ def judge_candidates(
         return []
 
     client = client or _baseten_client()
-    model = model or os.getenv("BASETEN_MODEL", "zai-org/GLM-5.3-Flash")
+    model = model or os.getenv("BASETEN_JUDGE_MODEL") or os.getenv("BASETEN_MODEL", "zai-org/GLM-5.3-Flash")
     lines = [
         "Image 1 is the garment chip.",
         "Score each product image using its candidate_index:",
@@ -248,6 +324,7 @@ def judge_candidates(
         ],
         response_format=_JUDGE_SCHEMA,
         temperature=0,
+        seed=0,
         max_tokens=1200,
     )
     raw = response.choices[0].message.content

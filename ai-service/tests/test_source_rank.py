@@ -197,14 +197,16 @@ class RankerTests(unittest.TestCase):
         result = fallback_rank_candidates(GARMENT, candidates)
         self.assertEqual(result[0]["match_type"], "similar")
 
+    @patch("services.source_and_rank.browse_products", return_value=[])
     @patch("services.retrieval.search_shopify_catalog")
-    def test_shopify_failure_does_not_crash_outfit(self, search):
+    def test_shopify_failure_does_not_crash_outfit(self, search, _browse):
         search.side_effect = ShopifyCatalogError("timeout")
         self.assertEqual(source_and_rank(GARMENT), [])
 
+    @patch("services.source_and_rank.browse_products", return_value=[])
     @patch("services.source_and_rank.rank_candidates")
     @patch("services.retrieval.search_shopify_catalog")
-    def test_accepts_large_base64_without_treating_it_as_a_path(self, search, rank):
+    def test_accepts_large_base64_without_treating_it_as_a_path(self, search, rank, _browse):
         encoded = "Y" * 5000
         search.return_value = []
         rank.return_value = []

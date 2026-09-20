@@ -23,10 +23,9 @@ FitStealer/
 │   ├── main.py                    # FastAPI server & route handlers
 │   ├── requirements.txt           # Python dependencies
 │   └── services/                  # Business logic & AI agent integrations
-│       ├── baseten_vlm.py         # Stage 1: vision tagging on a still
-│       ├── shopify_filter.py      # Stage 1: Shopify catalog search (replace stub)
-│       ├── browserbase_scraper.py # Stage 3+: open-web source agent
-│       └── video_processor.py     # Stage 3: video → keyframes
+│
+├── agent/                         # Cloudflare IdentifyAgent (Workers + Durable Object + KV + R2)
+│   └── src/identify-agent.ts      # matching loop: see → detail → retrieve → judge → maybe browse → rank
 │
 ├── package.json                   # Root scripts (`npm run dev` starts all services)
 └── .env.example                   # Environment configuration template
@@ -114,6 +113,14 @@ Health checks:
 - Backend: `http://localhost:4000/health`
 - AI service: `http://localhost:8000/health`
 
+Matching golden set (Stage G):
+
+```bash
+cd ai-service
+./venv/bin/python -m evals.run_golden
+./evals/demo.sh path/to/known-good-screenshot.jpg
+```
+
 ---
 
 ### iOS Simulator
@@ -164,6 +171,15 @@ source venv/bin/activate
 uvicorn main:app --reload --port 8000
 ```
 
+**Cloudflare IdentifyAgent (same `/api/identify` + `/jobs/:id` contract):**
+
+```bash
+cd agent
+cp .dev.vars.example .dev.vars
+npm install
+npx wrangler dev
+```
+
 ---
 
 ## 📡 API Endpoints
@@ -174,8 +190,12 @@ The frontend talks to the backend on port **4000**. The backend talks to the AI 
 | ------ | --- | --- |
 | `GET`  | `/health` | Server health status check |
 | `POST` | `/api/identify` | Stage 1: multipart image → clothing items + source links |
-| `POST` | `/tools/source-rank` | Internal AI tool: garment + chip → ranked Shopify matches |
+| `GET`  | `/jobs/:id` | Poll `IdentifyResult` (`seeing` → `detailing` → `sourcing` → `judging` → `retrying` → `ranking`) |
+| `POST` | `/tools/retrieve` `/judge` `/browse` `/rank` | Internal matching tools (Express or Cloudflare IdentifyAgent) |
+| `POST` | `/tools/source-rank` | Combined retrieve→judge→browse→rank fallback |
 | `POST` | `/api/process-url` | Legacy stub; do not build Stage 1 on this |
+
+Point Expo at the Cloudflare IdentifyAgent by setting `EXPO_PUBLIC_API_BASE_URL` to the Worker URL (`cd agent && npx wrangler dev` after `npm install`).
 
 ---
 

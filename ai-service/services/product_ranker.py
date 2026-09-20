@@ -106,11 +106,9 @@ def category_agrees(garment: dict[str, Any], candidate: dict[str, Any]) -> bool:
     """True when the product title is compatible with the detected category."""
     category = str(garment.get("category") or "").lower().strip()
     title = str(candidate.get("title") or "").lower()
-    if not category:
-        return True
+    if not category or not title:
+        return False
     aliases = CATEGORY_ALIASES.get(category, {category})
-    if not title:
-        return True
     return any(alias in title for alias in aliases)
 
 
@@ -143,7 +141,7 @@ def _gate_exact(
     if (
         score is None
         or score < EXACT_VISUAL_THRESHOLD
-        or label == "different"
+        or label != "same_item"
         or not category_agrees(garment, candidate)
     ):
         return "similar", DEMOTED_REASON

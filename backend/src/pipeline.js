@@ -16,7 +16,9 @@ import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
 import { canonicalizeQuery } from './queryCanonicalize.js';
 import { Sentry } from './sentry.js';
 import { agentLog, jobMsg, logger } from './logger.js';
-import { perceive, resolveSourceMode, sourceAndRank } from './tools.js';
+import { perceive, resolveSourceMode, seeChips } from './tools.js';
+import { matchOutfit } from './matchingLoop.js';
+import { diagnoseFailStage, exactCount, preferStrongExact, seechipQueryCount } from './matchDisplay.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const MOCK_RESULT = JSON.parse(
@@ -27,7 +29,7 @@ const ALLOWED_ORIGINS = new Set(['app', 'android_overlay', 'android_qs', 'share'
 const IMAGE_MIME = /^image\/(jpeg|jpg|pjpeg|png|webp|heic|heif|gif)$/i;
 const IMAGE_EXT = /\.(jpe?g|png|webp|heic|heif|gif)$/i;
 const ALLOWED_MATCH = new Set(['exact', 'similar']);
-const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 120_000);
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 210_000);
 
 export function isImageUpload(file) {
   if (!file) return false;
@@ -150,6 +152,11 @@ function commit(jobId, ctx, patch) {
   return next;
 }
 
+function step(jobId, ctx, status, note, extra = {}) {
+  ctx.steps = [...(ctx.steps || []), { status, at: new Date().toISOString(), note }];
+  return commit(jobId, ctx, { status, steps: ctx.steps, ...extra });
+}
+
 export function startIdentifyJob({ origin = 'app', file, deviceId } = {}) {
   const jobOrigin = ALLOWED_ORIGINS.has(origin) ? origin : 'app';
   const job = createJob({
@@ -159,7 +166,7 @@ export function startIdentifyJob({ origin = 'app', file, deviceId } = {}) {
     items: [],
   });
 
-  const ctx = { cancelled: false, deviceId: sanitizeDeviceId(deviceId) };
+  const ctx = { cancelled: false, deviceId: sanitizeDeviceId(deviceId), steps: [] };
   const limit = setTimeout(() => {
     ctx.cancelled = true;
     logger.error(jobMsg(job.job_id, 'timed out — photo took too long to identify'));
@@ -221,7 +228,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       // Tracing attributes are optional.
     }
 
-    const cached = getCachedIdentify(imageHash);
+    const cached = getCachedIdentify(imageHash, phash);
     if (cached) {
       logger.info(jobMsg(jobId, `cache hit — returning identical IdentifyResult (${String(imageHash).slice(0, 12)})`));
       Sentry.logger.info('identify.cache_hit', {
@@ -245,11 +252,12 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
         status: 'done',
         outfit_summary: cached.outfit_summary || '',
         items: cached.items || [],
+        steps: ctx.steps,
       });
       return;
     }
 
-    commit(jobId, ctx, { status: 'seeing' });
+    step(jobId, ctx, 'seeing', 'looking at the outfit');
 
     let perceived;
     try {
@@ -257,7 +265,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
         logger.warn(jobMsg(jobId, 'see — using mock clothes (IDENTIFY_MOCK=see)'));
         perceived = mockSeeResult();
       } else {
-        perceived = await perceive(file, jobId);
+        perceived = await perceive(file, jobId, { detail: false });
       }
     } catch (error) {
       logger.error(jobMsg(jobId, 'see — Baseten/AI failed'), error);
@@ -272,7 +280,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
 
     temps.push(...collectTempPaths(perceived || {}));
 
-    const garments = (perceived?.garments || [])
+    let garments = (perceived?.garments || [])
       .map((garment, index) => normalizeGarment(garment, index))
       .filter((garment) => garment && garment.confidence >= 0.5);
 
@@ -298,18 +306,43 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
         items: [],
       });
       if (imageHash && mocks.size === 0) {
-        setCachedIdentify(imageHash, {
-          outfit_summary: perceived?.outfit_summary || '',
-          items: [],
-        });
+        setCachedIdentify(
+          imageHash,
+          {
+            outfit_summary: perceived?.outfit_summary || '',
+            items: [],
+          },
+          phash,
+        );
       }
       return;
     }
 
     const names = garments.map((garment) => garment.category).join(', ');
     logger.info(jobMsg(jobId, `see — ${garments.length} clothes: ${names}`));
+    temps.push(...collectTempPaths({ garments }));
+
+    step(jobId, ctx, 'detailing', 'reading each garment up close', {
+      outfit_summary: perceived.outfit_summary || '',
+      items: garments.map((garment) => ({ garment, matches: [] })),
+    });
+
+    if (!mocks.has('see')) {
+      try {
+        const detailed = await seeChips(garments, jobId);
+        garments = detailed
+          .map((garment, index) => normalizeGarment(garment, index))
+          .filter((garment) => garment && garment.confidence >= 0.5);
+        temps.push(...collectTempPaths({ garments }));
+        logger.info(jobMsg(jobId, `see-chip — detailed ${garments.length} clothes`));
+      } catch (chipError) {
+        logger.warn(jobMsg(jobId, 'see-chip — failed, using scene descriptions'));
+        logger.warn(chipError instanceof Error ? chipError.message : String(chipError));
+      }
+    }
+
     // #region agent log
-    agentLog('A', 'pipeline.js:see', 'garments after see+crop+confidence filter', {
+    agentLog('A', 'pipeline.js:see', 'garments after see+crop+SeeChip+confidence filter', {
       jobId,
       outfit_summary: perceived?.outfit_summary || '',
       rawCount: (perceived?.garments || []).length,
@@ -330,42 +363,43 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       })),
     });
     // #endregion
-    temps.push(...collectTempPaths({ garments }));
 
-    commit(jobId, ctx, {
-      status: 'sourcing',
-      outfit_summary: perceived.outfit_summary || '',
-      items: garments.map((garment) => ({ garment, matches: [] })),
-    });
+    if (garments.length === 0) {
+      commit(jobId, ctx, {
+        status: 'done',
+        outfit_summary: perceived?.outfit_summary || '',
+        items: [],
+      });
+      return;
+    }
 
     const forceMockSource = mocks.has('source');
     const sourceMode = await resolveSourceMode(forceMockSource);
     if (sourceMode === 'mock') {
       logger.warn(jobMsg(jobId, 'source — Shopify tools unavailable, using mock matches'));
     } else {
-      logger.info(jobMsg(jobId, 'source — Shopify fan-out · Composio if catalog thin · Browserbase skipped'));
+      logger.info(jobMsg(jobId, 'match — retrieve → judge → maybe browse → rank'));
     }
 
     let usedMock = sourceMode === 'mock';
     let ranked;
     try {
-      ranked = await Promise.all(
-        garments.map(async (garment) => {
-          if (sourceMode === 'mock') {
-            return { garment, matches: mockMatchesFor(garment) };
+      if (sourceMode === 'mock') {
+        step(jobId, ctx, 'sourcing', 'searching catalogs');
+        ranked = garments.map((garment) => ({ garment, matches: preferStrongExact(mockMatchesFor(garment)) }));
+        step(jobId, ctx, 'ranking', 'picking the best matches');
+      } else {
+        const raw = await matchOutfit(garments, jobId, {
+          onStep: (status, note) => step(jobId, ctx, status, note),
+        });
+        ranked = raw.map((item) => {
+          if (item.matches == null) {
+            logger.warn(jobMsg(jobId, `source — ${item.garment.category}: no live results`));
+            return { garment: item.garment, matches: [] };
           }
-          const matches = await sourceAndRank(garment, jobId);
-          if (matches == null) {
-            usedMock = true;
-            logger.warn(jobMsg(jobId, `source — ${garment.category}: no live results, using mock matches`));
-            // #region agent log
-            agentLog('D', 'pipeline.js:mockFallback', 'used mock matches', { jobId, category: garment.category });
-            // #endregion
-            return { garment, matches: mockMatchesFor(garment) };
-          }
-          return { garment, matches: normalizeMatches(matches) };
-        }),
-      );
+          return { garment: item.garment, matches: preferStrongExact(normalizeMatches(item.matches)) };
+        });
+      }
     } catch (error) {
       logger.error(jobMsg(jobId, 'source — shop search failed'), error);
       commit(jobId, ctx, {
@@ -376,22 +410,44 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
       });
       return;
     }
-
-    commit(jobId, ctx, { status: 'ranking' });
     const matchCount = ranked.reduce((count, item) => count + item.matches.length, 0);
+    const exacts = exactCount(ranked);
+    const failStage = diagnoseFailStage(ranked);
     logger.info(jobMsg(jobId, `rank — finished for all garments`));
     logger.info(jobMsg(jobId, `done — ${ranked.length} clothes, ${matchCount} shop matches`));
+    const doneFields = matchingFields(ranked.map((item) => item.garment), {
+      image_hash: imageHash,
+      phash,
+      visual_score: bestVisualScore(ranked),
+      exact_count: exacts,
+      exact_rate: ranked.length ? Number((exacts / ranked.length).toFixed(3)) : 0,
+      fail_stage: failStage,
+      seechip_queries: seechipQueryCount(ranked),
+    });
     Sentry.logger.info('identify.done', {
       job_id: jobId,
       origin,
       garment_count: ranked.length,
       shopify_hits: matchCount,
-      ...matchingFields(ranked.map((item) => item.garment), {
-        image_hash: imageHash,
-        phash,
-        visual_score: bestVisualScore(ranked),
-      }),
+      ...doneFields,
     });
+    if (failStage) {
+      Sentry.logger.warn('identify.exact_rate_zero', {
+        job_id: jobId,
+        origin,
+        fail_stage: failStage,
+        ...doneFields,
+      });
+    }
+    try {
+      const span = Sentry.getActiveSpan();
+      span?.setAttribute('exact_count', exacts);
+      span?.setAttribute('fail_stage', failStage || '');
+      span?.setAttribute('visual_score', doneFields.visual_score ?? '');
+      span?.setAttribute('seechip_queries', doneFields.seechip_queries);
+    } catch {
+      // Tracing attributes are optional.
+    }
     // #region agent log
     agentLog('D', 'pipeline.js:done', 'identify result', {
       jobId,
@@ -423,10 +479,14 @@ async function runPipeline(jobId, file, ctx, origin = 'app') {
     // #endregion
     const items = scrubChipKeys(ranked);
     if (!usedMock && mocks.size === 0 && imageHash) {
-      setCachedIdentify(imageHash, {
-        outfit_summary: perceived?.outfit_summary || '',
-        items,
-      });
+      setCachedIdentify(
+        imageHash,
+        {
+          outfit_summary: perceived?.outfit_summary || '',
+          items,
+        },
+        phash,
+      );
     }
     commit(jobId, ctx, {
       status: 'done',

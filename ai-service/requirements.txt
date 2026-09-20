@@ -6,3 +6,5 @@ openai
 pillow
 python-multipart
 sentry-sdk
+playwright
+browserbase

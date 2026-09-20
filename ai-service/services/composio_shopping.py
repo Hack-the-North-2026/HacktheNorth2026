@@ -194,7 +194,8 @@ def search_composio_shopping(
             "hl": "en",
         },
         "version": os.getenv("COMPOSIO_TOOLKIT_VERSION", COMPOSIO_TOOLKIT_VERSION),
-        "dangerously_skip_version_check": True,
+        "dangerously_skip_version_check": os.getenv("COMPOSIO_SKIP_VERSION_CHECK", "").strip()
+        in {"1", "true", "yes"},
     }
     client = session or requests.Session()
     try:

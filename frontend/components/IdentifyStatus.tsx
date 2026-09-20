@@ -2,10 +2,19 @@ import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { IDENTIFY_STATUS_COPY, IdentifyStatus } from '../lib/types';
 
-const STEPS: IdentifyStatus[] = ['queued', 'ingesting', 'seeing', 'sourcing', 'ranking'];
+const STEPS: IdentifyStatus[] = [
+  'queued',
+  'ingesting',
+  'seeing',
+  'detailing',
+  'sourcing',
+  'judging',
+  'ranking',
+];
 
 export function IdentifyStatusView({ status }: { status: IdentifyStatus }) {
-  const currentIndex = Math.max(0, STEPS.indexOf(status));
+  const progressStatus = status === 'retrying' ? 'judging' : status;
+  const currentIndex = Math.max(0, STEPS.indexOf(progressStatus));
 
   return (
     <View style={styles.wrap}>

@@ -227,6 +227,7 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
         messages=messages,
         response_format=_GARMENT_SCHEMA,
         temperature=0,
+        seed=0,
         max_tokens=2048,
     )
 

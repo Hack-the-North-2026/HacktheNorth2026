@@ -7,6 +7,7 @@ import * as Haptics from 'expo-haptics';
 import { FitCard } from '../../components/FitCard';
 import { IdentifyStatusView } from '../../components/IdentifyStatus';
 import { getIdentifyJob } from '../../lib/api';
+import { preferStrongExact } from '../../lib/matches';
 import { getJobPreview } from '../../lib/resultStore';
 import { Sentry, withIdentifySpan } from '../../lib/sentry';
 import { IdentifyResult } from '../../lib/types';
@@ -180,7 +181,9 @@ export default function JobScreen() {
           <Text style={styles.summary}>{result.outfit_summary}</Text>
         ) : null}
 
-        {done && result?.items.map(({ garment, matches }, index) => (
+        {done && result?.items.map(({ garment, matches }, index) => {
+          const shown = preferStrongExact(matches);
+          return (
           <AnimatedSection key={garment.id} index={index}>
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>{garment.description}</Text>
@@ -188,17 +191,18 @@ export default function JobScreen() {
                 <Text style={styles.accessLine}>{garment.accessibility_line}</Text>
               ) : null}
               <View style={styles.cardGroup}>
-                {matches.length === 0 ? (
+                {shown.length === 0 ? (
                   <Text style={styles.emptySubtitle}>No product matches yet for this item.</Text>
                 ) : (
-                  matches.map((match, matchIndex) => (
+                  shown.map((match, matchIndex) => (
                     <FitCard key={`${garment.id}-${matchIndex}`} match={match} />
                   ))
                 )}
               </View>
             </View>
           </AnimatedSection>
-        ))}
+          );
+        })}
       </ScrollView>
 
       <Pressable style={styles.backButton} onPress={() => router.replace('/')}>

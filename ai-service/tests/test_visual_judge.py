@@ -23,7 +23,9 @@ from services.source_and_rank import source_and_rank  # noqa: E402
 from services.visual_judge import (  # noqa: E402
     EXACT_VISUAL_THRESHOLD,
     chip_jpeg_bytes,
+    fetch_candidate_images,
     fetch_product_image,
+    is_public_http_url,
     judge_candidates,
     prepare_jpeg_bytes,
 )
@@ -82,11 +84,16 @@ class ImagePrepTests(unittest.TestCase):
     def test_chip_jpeg_bytes_from_file(self):
         from tempfile import TemporaryDirectory
 
-        with TemporaryDirectory() as tmp:
+        with TemporaryDirectory(prefix="fit-stealer-") as tmp:
             path = Path(tmp) / "chip.jpg"
             path.write_bytes(jpeg_bytes())
             data = chip_jpeg_bytes(None, {"chip_key": str(path)})
             self.assertIsNotNone(data)
+
+    def test_fetch_skips_private_urls(self):
+        self.assertIsNone(fetch_product_image("http://127.0.0.1/secret.jpg"))
+        self.assertIsNone(fetch_product_image("http://169.254.169.254/latest/meta-data"))
+        self.assertIsNone(fetch_product_image("http://localhost/chip.jpg"))
 
     def test_fetch_skips_http_errors(self):
         import requests as req
@@ -97,10 +104,34 @@ class ImagePrepTests(unittest.TestCase):
     def test_fetch_skips_html_bodies(self):
         response = Mock()
         response.raise_for_status.return_value = None
+        response.status_code = 200
+        response.is_redirect = False
         response.headers = {"Content-Type": "text/html"}
         response.content = b"<html>not an image</html>"
         with patch("services.visual_judge.requests.get", return_value=response):
-            self.assertIsNone(fetch_product_image("https://cdn.example/page"))
+            self.assertIsNone(fetch_product_image("https://example.com/page"))
+
+    def test_private_hosts_are_blocked(self):
+        self.assertFalse(is_public_http_url("http://127.0.0.1/a.jpg"))
+        self.assertFalse(is_public_http_url("http://10.0.0.5/a.jpg"))
+        self.assertFalse(is_public_http_url("http://192.168.1.9/a.jpg"))
+        self.assertFalse(is_public_http_url("http://169.254.169.254/latest"))
+        self.assertFalse(is_public_http_url("http://localhost/a.jpg"))
+        self.assertTrue(is_public_http_url("http://8.8.8.8/a.jpg"))
+
+    def test_fetch_backfills_after_broken_urls(self):
+        urls = [f"https://cdn.example/{i}.jpg" for i in range(10)]
+        candidates = [{"title": "J", "url": f"https://shop.example/{i}", "image_url": url} for i, url in enumerate(urls)]
+
+        def fake_fetch(url: str, timeout: float = 3.5):
+            index = int(url.rsplit("/", 1)[-1].split(".")[0])
+            if index < 8:
+                return None
+            return jpeg_bytes((index, index, index))
+
+        with patch("services.visual_judge.fetch_product_image", side_effect=fake_fetch):
+            photos = fetch_candidate_images(candidates, limit=8)
+        self.assertEqual([index for index, _jpeg in photos], [8, 9])
 
 
 class JudgeTests(unittest.TestCase):
@@ -132,6 +163,7 @@ class JudgeTests(unittest.TestCase):
         self.assertEqual(scores[0]["candidate_index"], 2)
         self.assertEqual(scores[0]["score"], 0.91)
         self.assertEqual(client.chat.completions.create.call_args.kwargs["temperature"], 0)
+        self.assertEqual(client.chat.completions.create.call_args.kwargs["seed"], 0)
 
     def test_skips_when_chip_missing(self):
         self.assertEqual(judge_candidates(None, [JACKET], GARMENT), [])
@@ -172,16 +204,29 @@ class RankerGateTests(unittest.TestCase):
         result = fallback_rank_candidates(GARMENT, [JACKET])
         self.assertEqual(result[0]["match_type"], "similar")
 
+    def test_high_score_similar_label_cannot_be_exact(self):
+        visuals = [{"candidate_index": 0, "label": "similar", "score": 0.85, "reason": "same color"}]
+        result = rank_candidates(
+            GARMENT, [JACKET], client=fake_rank_client("exact"), visual_scores=visuals
+        )
+        self.assertEqual(result[0]["match_type"], "similar")
+        self.assertEqual(result[0]["reason"], DEMOTED_REASON)
+
+    def test_empty_title_does_not_agree(self):
+        self.assertFalse(category_agrees(GARMENT, {"title": ""}))
+        self.assertFalse(category_agrees(GARMENT, {}))
+
     def test_category_aliases_match_field_jacket(self):
         self.assertTrue(category_agrees(GARMENT, {"title": "Iver 4 Pocket Field Jacket"}))
         self.assertFalse(category_agrees(GARMENT, {"title": "Canvas Tote Bag"}))
 
 
 class SourceVisionFallbackTests(unittest.TestCase):
+    @patch("services.source_and_rank.browse_products", return_value=[])
     @patch("services.source_and_rank.rank_candidates")
     @patch("services.source_and_rank.judge_candidates", return_value=[])
     @patch("services.retrieval.search_shopify_catalog")
-    def test_empty_visual_scores_use_similar_only_fallback(self, search, _judge, rank):
+    def test_empty_visual_scores_use_similar_only_fallback(self, search, _judge, rank, _browse):
         search.return_value = [JACKET]
         rank.return_value = [{"match_type": "exact"}]
         result = source_and_rank(GARMENT, "YWJj")

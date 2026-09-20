@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node --watch-path=src --watch-path=public src/index.js",
     "start": "node src/index.js",
+    "test": "node --test tests/*.test.js",
     "smoke": "bash scripts/smoke-identify.sh"
   },
   "dependencies": {

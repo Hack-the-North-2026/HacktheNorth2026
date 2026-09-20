@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "id": "distinctive-leather-jacket",
+      "kind": "distinctive_jacket",
+      "expected_categories": ["jacket"],
+      "expect_empty": false,
+      "expect_exact": true
+    },
+    {
+      "id": "logo-hoodie",
+      "kind": "logo",
+      "expected_categories": ["shirt"],
+      "expect_empty": false,
+      "expect_exact": true
+    },
+    {
+      "id": "generic-white-tee",
+      "kind": "generic_tee",
+      "expected_categories": ["shirt"],
+      "expect_empty": false,
+      "expect_exact": false
+    },
+    {
+      "id": "no-clothes",
+      "kind": "no_clothes",
+      "expected_categories": [],
+      "expect_empty": true,
+      "expect_exact": false
+    },
+    {
+      "id": "cream-quarter-zip",
+      "kind": "distinctive_jacket",
+      "expected_categories": ["jacket"],
+      "expect_empty": false,
+      "expect_exact": false
+    },
+    {
+      "id": "washed-denim",
+      "kind": "generic_tee",
+      "expected_categories": ["pants"],
+      "expect_empty": false,
+      "expect_exact": false
+    },
+    {
+      "id": "silver-hardware-bomber",
+      "kind": "distinctive_jacket",
+      "expected_categories": ["jacket"],
+      "expect_empty": false,
+      "expect_exact": true
+    },
+    {
+      "id": "wide-leg-pants",
+      "kind": "generic_tee",
+      "expected_categories": ["pants"],
+      "expect_empty": false,
+      "expect_exact": false
+    },
+    {
+      "id": "sneakers",
+      "kind": "generic_tee",
+      "expected_categories": ["shoes"],
+      "expect_empty": false,
+      "expect_exact": false
+    },
+    {
+      "id": "multi-piece-outfit",
+      "kind": "distinctive_jacket",
+      "expected_categories": ["jacket", "pants"],
+      "expect_empty": false,
+      "expect_exact": true
+    }
+  ]
+}

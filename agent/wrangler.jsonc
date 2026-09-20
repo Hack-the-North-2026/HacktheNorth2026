@@ -1,0 +1,38 @@
+{
+  "name": "fit-stealer-identify",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-19",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "IdentifyAgent",
+        "class_name": "IdentifyAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["IdentifyAgent"]
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "MATCH_CACHE",
+      "id": "00000000000000000000000000000001"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "MEDIA",
+      "bucket_name": "fit-stealer-media"
+    }
+  ],
+  "vars": {
+    "AI_SERVICE_URL": "http://127.0.0.1:8000"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

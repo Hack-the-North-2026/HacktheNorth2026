@@ -110,6 +110,7 @@ class SeeChipCallTests(unittest.TestCase):
             result = analyze_chip(str(chip_path), "jacket", client=fake)
         kwargs = fake.chat.completions.create.call_args.kwargs
         self.assertEqual(kwargs["temperature"], 0)
+        self.assertEqual(kwargs["seed"], 0)
         self.assertIsNone(result["brand"])
         image_block = kwargs["messages"][1]["content"][1]
         self.assertEqual(image_block["type"], "image_url")
