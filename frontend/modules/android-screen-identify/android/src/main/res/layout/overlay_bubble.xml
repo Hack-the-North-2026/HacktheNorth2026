@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Floating bubble layout.
+  A single FrameLayout containing an ImageView with a scissors icon.
+  Sized to 54dp × 54dp in WindowManager params (see FitStealerAccessibilityService).
+-->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/bubble_root"
+    android:layout_width="54dp"
+    android:layout_height="54dp"
+    android:background="@drawable/bubble_background"
+    android:clickable="true"
+    android:focusable="true"
+    android:elevation="8dp">
+
+    <!-- Using a built-in system icon; replaced at runtime with a vector if available. -->
+    <ImageView
+        android:id="@+id/bubble_icon"
+        android:layout_width="26dp"
+        android:layout_height="26dp"
+        android:layout_gravity="center"
+        android:src="@android:drawable/ic_menu_camera"
+        android:tint="#FFFFFFFF"
+        android:contentDescription="Identify outfit" />
+
+</FrameLayout>

@@ -13,6 +13,7 @@
       "bundleIdentifier": "com.fitstealer.app"
     },
     "android": {
+      "package": "com.fitstealer.app",
       "adaptiveIcon": {
         "backgroundColor": "#050509",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -34,7 +35,8 @@
           "cameraPermission": "Fit Stealer needs camera access to capture an outfit to identify."
         }
       ],
-      "@sentry/react-native"
+      "@sentry/react-native",
+      "./modules/android-screen-identify/app.plugin.js"
     ]
   }
 }

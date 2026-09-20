@@ -46,6 +46,9 @@ export default function JobScreen() {
     if (!jobId) return;
     let cancelled = false;
 
+    setResult(null);
+    setError(null);
+
     const poll = async () => {
       try {
         await withIdentifySpan(jobId, async () => {

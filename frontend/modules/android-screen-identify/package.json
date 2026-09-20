@@ -1,0 +1,7 @@
+{
+  "name": "fit-stealer-android-screen-identify",
+  "version": "1.0.0",
+  "description": "Native Android AccessibilityService overlay module for Fit Stealer. Draws a floating bubble; on tap captures the screen and POSTs to /api/identify.",
+  "main": "app.plugin.js",
+  "private": true
+}

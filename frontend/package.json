@@ -30,10 +30,10 @@
   },
   "scripts": {
     "dev": "node scripts/dev-ios.mjs",
-    "start": "expo start --port 3000",
-    "android": "expo start --android --port 3000",
+    "start": "expo start --port 8081",
+    "android": "expo start --android --port 8081",
     "ios": "node scripts/dev-ios.mjs",
-    "web": "expo start --web --port 3000"
+    "web": "expo start --web --port 8081"
   },
   "private": true
 }

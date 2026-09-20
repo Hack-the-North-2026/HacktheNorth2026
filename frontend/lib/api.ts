@@ -18,15 +18,19 @@ function hostFromExpo(): string | null {
 }
 
 export function getApiBaseUrl(): string {
+  // On Android physical device connected via USB, adb reverse tcp:4000 tcp:4000
+  // maps 127.0.0.1:4000 on the phone → localhost:4000 on the laptop.
+  // This is the ONLY reliable path; LAN IPs are blocked by router isolation.
+  if (Platform.OS === 'android') {
+    return 'http://127.0.0.1:4000';
+  }
+
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '');
   if (fromEnv) return fromEnv;
 
   const lanHost = hostFromExpo();
   if (lanHost) return `http://${lanHost}:4000`;
 
-  if (Platform.OS === 'android') {
-    return 'http://10.0.2.2:4000';
-  }
   return 'http://localhost:4000';
 }
 
@@ -96,24 +100,38 @@ async function readJson<T>(response: Response): Promise<T> {
   return data;
 }
 
+/** Hermes-compatible fetch with timeout (AbortSignal.timeout is not available). */
+function fetchWithTimeout(url: string, opts: RequestInit = {}, timeoutMs = 5000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 export async function startIdentifyJob(upload: string | IdentifyUpload): Promise<IdentifyResult> {
   const image = typeof upload === 'string' ? { uri: upload } : upload;
-  const response = await fetch(`${getApiBaseUrl()}/api/identify`, {
+  const response = await fetchWithTimeout(`${getApiBaseUrl()}/api/identify`, {
     method: 'POST',
     body: await buildIdentifyForm(image),
     headers: { Accept: 'application/json' },
-  });
+  }, 30000);
   return readJson<IdentifyResult>(response);
 }
 
 export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
-  const response = await fetch(`${getApiBaseUrl()}/jobs/${encodeURIComponent(jobId)}`, {
-    headers: { Accept: 'application/json' },
-  });
+  const url = `${getApiBaseUrl()}/jobs/${encodeURIComponent(jobId)}?_t=${Date.now()}`;
+  const response = await fetchWithTimeout(url, {
+    headers: { 
+      Accept: 'application/json',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    },
+  }, 5000);
   return readJson<IdentifyResult>(response);
 }
 
 export async function checkBackendHealth() {
-  const response = await fetch(`${getApiBaseUrl()}/health`);
+  const response = await fetchWithTimeout(`${getApiBaseUrl()}/health`, {}, 3000);
   return readJson(response);
 }
+

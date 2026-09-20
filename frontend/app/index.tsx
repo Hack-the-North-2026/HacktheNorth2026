@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { StyleSheet, Text, View, Animated, Alert, Platform } from 'react-native';
+import { StyleSheet, Text, View, Animated, Alert, Platform, Pressable, Linking } from 'react-native';
 import { useRouter } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob } from '../lib/api';
@@ -54,6 +54,13 @@ export default function HomeScreen() {
     }
   };
 
+  // Opens Android Accessibility Settings so the user can enable the overlay service.
+  const openAccessibilitySettings = () => {
+    Linking.openSettings().catch(() => {
+      Alert.alert('Open Settings', 'Go to Settings → Accessibility → Fit Stealer to enable the overlay.');
+    });
+  };
+
   const takePhoto = async () => {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
@@ -75,6 +82,15 @@ export default function HomeScreen() {
         </View>
         <Text style={styles.caption}>Tap to find this fit</Text>
         <Text style={styles.subCaption}>Hold to use the camera</Text>
+        {Platform.OS === 'android' && (
+          <Pressable
+            style={styles.overlayButton}
+            onPress={openAccessibilitySettings}
+            accessibilityLabel="Set up overlay bubble"
+            accessibilityHint="Opens Accessibility Settings to enable the Fit Stealer overlay">
+            <Text style={styles.overlayButtonText}>⚙ Setup Overlay Bubble</Text>
+          </Pressable>
+        )}
       </Animated.View>
 
       <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity, pointerEvents: 'none' }]}>
@@ -133,5 +149,20 @@ const styles = StyleSheet.create({
   scanSubtitle: {
     fontSize: 13,
     color: '#5C5C6B',
+  },
+  overlayButton: {
+    marginTop: 28,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(108,108,255,0.4)',
+    backgroundColor: 'rgba(108,108,255,0.12)',
+  },
+  overlayButtonText: {
+    color: '#9C9CFF',
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.3,
   },
 });

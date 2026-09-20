@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import qrcode from 'qrcode-terminal';
 
 const DEVICE = 'iPhone 17';
-const PORT = 3000;
+const PORT = 8081;
 const EXPO_URL = `exp://127.0.0.1:${PORT}`;
 const EXPO_GO_BUNDLE_ID = 'host.exp.Exponent';
 const STATUS_URLS = [

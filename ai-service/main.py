@@ -33,8 +33,8 @@ from logging_config import configure_logging
 configure_logging()
 logger = logging.getLogger("fit_stealer.api")
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+load_dotenv(override=True)
 
 # Import perception services
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402

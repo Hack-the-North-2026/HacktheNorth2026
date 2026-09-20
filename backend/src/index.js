@@ -9,14 +9,15 @@ import { fileURLToPath } from 'node:url';
 import { logger } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: true });
+dotenv.config({ override: true });
 
 await import('./sentry.js');
 const { getJob } = await import('./jobs.js');
 const { isImageUpload, startIdentifyJob } = await import('./pipeline.js');
 
 const app = express();
+app.set('etag', false);
 const PORT = Number(process.env.BACKEND_PORT || 4000);
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const MAX_UPLOAD_BYTES = 45 * 1024 * 1024;
@@ -120,6 +121,9 @@ app.get('/dev/upload', (_req, res) => {
 });
 
 app.get('/jobs/:id', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   const job = getJob(req.params.id);
   if (!job) {
     return res.status(404).json({ error: 'Job not found.' });

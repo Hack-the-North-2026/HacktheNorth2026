@@ -7,7 +7,7 @@ if (fs.existsSync(envPath)) {
   const lines = fs.readFileSync(envPath, 'utf8').split(/\r?\n/);
   for (const line of lines) {
     const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)?\s*$/);
-    if (match && !process.env[match[1]]) {
+    if (match) {
       process.env[match[1]] = match[2] ? match[2].trim() : '';
     }
   }

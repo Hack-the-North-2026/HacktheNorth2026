@@ -22,8 +22,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
 
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=True)
+load_dotenv(override=True)
 
 MIN_CONFIDENCE = 0.5
 
@@ -139,8 +139,9 @@ def analyze_frames_with_vlm(image_paths: list[str]) -> dict:
             "outfit_summary": str
         }
     """
-    api_key = os.getenv("BASETEN_API_KEY", "")
-    model = os.getenv("BASETEN_MODEL", "zai-org/GLM-5.3-Flash")
+    load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env", override=True)
+    api_key = os.getenv("BASETEN_API_KEY", "").strip()
+    model = os.getenv("BASETEN_MODEL", "zai-org/GLM-5.3-Flash").strip()
 
     if not api_key:
         raise ValueError("BASETEN_API_KEY is not set in environment")
