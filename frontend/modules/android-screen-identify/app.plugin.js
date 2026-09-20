@@ -59,6 +59,9 @@ function withAndroidOverlayManifest(config) {
       'android.permission.BIND_ACCESSIBILITY_SERVICE',
       // Post status notification (Android 13+ / API 33 requirement).
       'android.permission.POST_NOTIFICATIONS',
+      // Required for Screen Recording
+      'android.permission.FOREGROUND_SERVICE',
+      'android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION',
     ];
 
     for (const perm of requiredPerms) {
@@ -80,7 +83,7 @@ function withAndroidOverlayManifest(config) {
         $: {
           'android:name': serviceName,
           'android:exported': 'true',
-          'android:label': '@string/app_name',
+          'android:label': 'Fit Stealer',
           // BIND_ACCESSIBILITY_SERVICE prevents 3rd-party apps from binding —
           // Android enforces this; declaring it here locks it down explicitly.
           'android:permission': 'android.permission.BIND_ACCESSIBILITY_SERVICE',
@@ -100,6 +103,36 @@ function withAndroidOverlayManifest(config) {
             },
           },
         ],
+      });
+    }
+
+    const recordServiceName = 'com.fitstealer.overlay.ScreenRecordService';
+    const alreadyRecordDeclared = services.some((s) => s.$?.['android:name'] === recordServiceName);
+    if (!alreadyRecordDeclared) {
+      services.push({
+        $: {
+          'android:name': recordServiceName,
+          'android:exported': 'false',
+          'android:foregroundServiceType': 'mediaProjection',
+        }
+      });
+    }
+
+    // --- Activity declaration ---
+    const activities = app.activity || [];
+    app.activity = activities;
+
+    const activityName = 'com.fitstealer.overlay.ScreenRecordConsentActivity';
+    const alreadyActivityDeclared = activities.some((a) => a.$?.['android:name'] === activityName);
+    if (!alreadyActivityDeclared) {
+      activities.push({
+        $: {
+          'android:name': activityName,
+          'android:exported': 'false',
+          'android:theme': '@android:style/Theme.Translucent.NoTitleBar',
+          'android:excludeFromRecents': 'true',
+          'android:taskAffinity': '',
+        }
       });
     }
 

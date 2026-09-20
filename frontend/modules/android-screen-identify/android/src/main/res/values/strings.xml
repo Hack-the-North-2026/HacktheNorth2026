@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name">Fit Stealer</string>
     <string name="accessibility_service_description">
         Fit Stealer Overlay — tap the bubble to identify clothing in any app.
         This service only captures a screenshot when you tap the button.

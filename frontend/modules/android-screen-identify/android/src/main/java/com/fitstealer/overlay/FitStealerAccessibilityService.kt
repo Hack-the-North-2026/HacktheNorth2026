@@ -9,6 +9,11 @@ import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.net.Uri
+import android.animation.ObjectAnimator
+import android.animation.PropertyValuesHolder
+import android.animation.ValueAnimator
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -102,6 +107,62 @@ class FitStealerAccessibilityService : AccessibilityService() {
         }
     }
 
+    private var hasConsent = false
+
+    private val recordReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                ScreenRecordService.ACTION_RECORDING_FINISHED -> {
+                    val videoPath = intent.getStringExtra(ScreenRecordService.EXTRA_VIDEO_PATH)
+                    if (videoPath != null) {
+                        Log.i(TAG, "Received video from service: $videoPath")
+                        showToast("Uploading video...")
+                        val file = java.io.File(videoPath)
+                        if (file.exists() && file.length() > 0) {
+                            Thread {
+                                try {
+                                    uploadMediaAndOpen(file.readBytes(), isVideo = true)
+                                } finally {
+                                    file.delete()
+                                }
+                            }.start()
+                        } else {
+                            showToast("Recording failed: Video file was empty")
+                            file.delete()
+                        }
+                    }
+                }
+                ScreenRecordService.ACTION_CONSENT_GRANTED -> {
+                    hasConsent = true
+                    Log.i(TAG, "Screen recording consent confirmed by service")
+                    mainHandler.post {
+                        showToast("Screen recording ready! Hold anytime to record.")
+                    }
+                }
+                ScreenRecordService.ACTION_CONSENT_DENIED -> {
+                    hasConsent = false
+                    mainHandler.post {
+                        stopRecordingUI()
+                        showToast("Hold again to grant screen recording permission")
+                    }
+                }
+                ScreenRecordService.ACTION_RECORDING_FAILED -> {
+                    val error = intent.getStringExtra("error") ?: "Unknown"
+                    Log.e(TAG, "Recording failed: $error")
+                    if (error.contains("token", ignoreCase = true) ||
+                        error.contains("permission", ignoreCase = true) ||
+                        error.contains("SecurityException", ignoreCase = true)) {
+                        hasConsent = false
+                    }
+                    mainHandler.post {
+                        stopRecordingUI()
+                        showToast("Recording failed: $error")
+                    }
+                }
+            }
+        }
+    }
+
     // -----------------------------------------------------------------------
     // AccessibilityService lifecycle
     // -----------------------------------------------------------------------
@@ -123,6 +184,18 @@ class FitStealerAccessibilityService : AccessibilityService() {
         }
         registerReceiver(lockScreenReceiver, filter)
 
+        val recordFilter = IntentFilter().apply {
+            addAction(ScreenRecordService.ACTION_RECORDING_FINISHED)
+            addAction(ScreenRecordService.ACTION_CONSENT_GRANTED)
+            addAction(ScreenRecordService.ACTION_CONSENT_DENIED)
+            addAction(ScreenRecordService.ACTION_RECORDING_FAILED)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(recordReceiver, recordFilter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(recordReceiver, recordFilter)
+        }
+
         showBubble()
     }
 
@@ -137,6 +210,7 @@ class FitStealerAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         super.onDestroy()
         try { unregisterReceiver(lockScreenReceiver) } catch (_: Exception) {}
+        try { unregisterReceiver(recordReceiver) } catch (_: Exception) {}
         removeBubble()
         removeDeleteZone()
         Log.i(TAG, "Service destroyed — bubble removed")
@@ -168,6 +242,38 @@ class FitStealerAccessibilityService : AccessibilityService() {
         }
         view.visibility = if (visible) View.VISIBLE else View.GONE
         try { wm.updateViewLayout(view, params) } catch (_: Exception) {}
+    }
+
+    // -----------------------------------------------------------------------
+    // UI Animations
+    // -----------------------------------------------------------------------
+    
+    private var pulseAnimator: ObjectAnimator? = null
+
+    private fun startRecordingUI() {
+        bubbleView?.let { view ->
+            view.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#FFFF3333"))
+            
+            val scaleX = PropertyValuesHolder.ofFloat(View.SCALE_X, 1.0f, 1.15f, 1.0f)
+            val scaleY = PropertyValuesHolder.ofFloat(View.SCALE_Y, 1.0f, 1.15f, 1.0f)
+            pulseAnimator = ObjectAnimator.ofPropertyValuesHolder(view, scaleX, scaleY).apply {
+                duration = 1000
+                repeatCount = ValueAnimator.INFINITE
+                start()
+            }
+        }
+    }
+
+    private fun stopRecordingUI() {
+        bubbleView?.let { view ->
+            view.backgroundTintList = null
+            
+            pulseAnimator?.cancel()
+            pulseAnimator = null
+            view.scaleX = 1.0f
+            view.scaleY = 1.0f
+            view.alpha = 1.0f
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -231,12 +337,33 @@ class FitStealerAccessibilityService : AccessibilityService() {
         wm.addView(view, params)
         bubbleView = view
 
-        // ---- Touch / drag logic ----
+        // ---- Touch / drag / long-press logic ----
         var initialX = 0
         var initialY = 0
         var touchX = 0f
         var touchY = 0f
         var moved = false
+        var isLongPress = false
+
+        val longPressRunnable = Runnable {
+            if (!moved) {
+                isLongPress = true
+                if (!hasConsent) {
+                    Log.i(TAG, "Requesting MediaProjection consent")
+                    val intent = Intent(this, ScreenRecordConsentActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    startActivity(intent)
+                } else {
+                    Log.i(TAG, "Starting screen record")
+                    val intent = Intent(this, ScreenRecordService::class.java).apply {
+                        action = ScreenRecordService.ACTION_START_RECORDING
+                    }
+                    startService(intent)
+                    mainHandler.post { startRecordingUI() }
+                }
+            }
+        }
 
         // Screen dimensions used for delete-zone hit test.
         val screenHeight = resources.displayMetrics.heightPixels
@@ -249,6 +376,8 @@ class FitStealerAccessibilityService : AccessibilityService() {
                     touchX = event.rawX
                     touchY = event.rawY
                     moved = false
+                    isLongPress = false
+                    mainHandler.postDelayed(longPressRunnable, 400)
                     true
                 }
 
@@ -257,6 +386,7 @@ class FitStealerAccessibilityService : AccessibilityService() {
                     val dy = (event.rawY - touchY).toInt()
                     if (!moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
                         moved = true
+                        mainHandler.removeCallbacks(longPressRunnable)
                         // Reveal the delete zone.
                         dzView.visibility = View.VISIBLE
                     }
@@ -273,12 +403,26 @@ class FitStealerAccessibilityService : AccessibilityService() {
                     true
                 }
 
-                MotionEvent.ACTION_UP -> {
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    mainHandler.removeCallbacks(longPressRunnable)
+                    mainHandler.post { stopRecordingUI() }
+                    
+                    // Always hide the delete zone on release
                     if (moved) {
-                        // Hide delete zone.
                         dzView.visibility = View.GONE
                         dzView.alpha = 0.75f
+                    }
 
+                    if (isLongPress) {
+                        // Stop recording if it was recording
+                        if (hasConsent) {
+                            Log.i(TAG, "Stopping screen record")
+                            val intent = Intent(this, ScreenRecordService::class.java).apply {
+                                action = ScreenRecordService.ACTION_STOP_RECORDING
+                            }
+                            startService(intent)
+                        }
+                    } else if (moved) {
                         // Check if bubble was dropped into the delete zone.
                         val bubbleCentreY = params.y + sizePx / 2
                         if (bubbleCentreY >= screenHeight - deleteZoneHeightPx) {
@@ -360,7 +504,7 @@ class FitStealerAccessibilityService : AccessibilityService() {
                             }.toByteArray()
                             softBitmap.recycle()
 
-                            uploadAndOpen(jpegBytes)
+                            uploadMediaAndOpen(jpegBytes, isVideo = false)
                         } catch (e: Exception) {
                             Log.e(TAG, "Screenshot processing failed", e)
                             mainHandler.post { showToast("Could not process screenshot") }
@@ -379,7 +523,7 @@ class FitStealerAccessibilityService : AccessibilityService() {
         )
     }
 
-    private fun uploadAndOpen(jpegBytes: ByteArray) {
+    private fun uploadMediaAndOpen(mediaBytes: ByteArray, isVideo: Boolean) {
         val endpointsList = mutableListOf<String>()
         if (API_BASE.isNotBlank() && !API_BASE.contains("10.0.2.2")) {
             endpointsList.add("$API_BASE/api/identify")
@@ -392,7 +536,7 @@ class FitStealerAccessibilityService : AccessibilityService() {
         for (endpoint in endpoints) {
             val boundary = "FitStealer${UUID.randomUUID().toString().replace("-", "")}"
             val url = URL(endpoint)
-            Log.i(TAG, "Attempting upload to $url (${jpegBytes.size} bytes)")
+            Log.i(TAG, "Attempting upload to $url (${mediaBytes.size} bytes)")
 
             var conn: HttpURLConnection? = null
             try {
@@ -408,15 +552,20 @@ class FitStealerAccessibilityService : AccessibilityService() {
                     val writer = OutputStreamWriter(out, Charsets.UTF_8)
                     writer.write("--$boundary\r\n")
                     writer.write("Content-Disposition: form-data; name=\"type\"\r\n\r\n")
-                    writer.write("image\r\n")
+                    writer.write(if (isVideo) "video\r\n" else "image\r\n")
                     writer.write("--$boundary\r\n")
                     writer.write("Content-Disposition: form-data; name=\"origin\"\r\n\r\n")
                     writer.write("android_overlay\r\n")
                     writer.write("--$boundary\r\n")
-                    writer.write("Content-Disposition: form-data; name=\"image\"; filename=\"overlay_capture.jpg\"\r\n")
-                    writer.write("Content-Type: image/jpeg\r\n\r\n")
+                    if (isVideo) {
+                        writer.write("Content-Disposition: form-data; name=\"video\"; filename=\"overlay_capture.mp4\"\r\n")
+                        writer.write("Content-Type: video/mp4\r\n\r\n")
+                    } else {
+                        writer.write("Content-Disposition: form-data; name=\"image\"; filename=\"overlay_capture.jpg\"\r\n")
+                        writer.write("Content-Type: image/jpeg\r\n\r\n")
+                    }
                     writer.flush()
-                    out.write(jpegBytes)
+                    out.write(mediaBytes)
                     out.flush()
                     writer.write("\r\n--$boundary--\r\n")
                     writer.flush()

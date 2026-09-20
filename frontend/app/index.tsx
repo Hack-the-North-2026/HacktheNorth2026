@@ -111,7 +111,6 @@ export default function HomeScreen() {
     }
   };
 
-  // Opens Android Accessibility Settings so the user can enable the overlay service.
   const openAccessibilitySettings = () => {
     Alert.alert(
       'Enable Fit Stealer',
@@ -153,7 +152,7 @@ export default function HomeScreen() {
   const isVideo = isVideoUri(uri);
 
   return (
-    <View style={styles.container}>
+    <View style={styles.container} >
       <Animated.View style={[styles.layer, { opacity: idleOpacity, pointerEvents: phase === 'idle' ? 'auto' : 'none' }]}>
         <Text style={styles.title}>Fit Stealer</Text>
         <Pressable
@@ -206,7 +205,7 @@ export default function HomeScreen() {
         active={phase === 'revealing'}
         onDone={onRippleDone}
       />
-    </View>
+    </View >
   );
 }
 
