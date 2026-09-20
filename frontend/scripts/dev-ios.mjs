@@ -124,10 +124,14 @@ const expoBin = path.resolve(
   isWin ? '../node_modules/.bin/expo.cmd' : '../node_modules/.bin/expo'
 );
 
+const localIp = getLocalIp();
+const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL || (localIp !== '127.0.0.1' ? `http://${localIp}:4000` : 'http://127.0.0.1:4000');
+
 const expo = spawn(expoBin, ['start', '--port', String(PORT)], {
   stdio: 'inherit',
   env: {
     ...process.env,
+    EXPO_PUBLIC_API_BASE_URL: apiBaseUrl,
     EXPO_NO_TELEMETRY: '1',
   },
   shell: isWin,

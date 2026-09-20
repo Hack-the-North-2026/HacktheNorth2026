@@ -18,19 +18,49 @@ function hostFromExpo(): string | null {
   return null;
 }
 
-export function getApiBaseUrl(): string {
-  // On Android physical device connected via USB, adb reverse tcp:4000 tcp:4000
-  // maps 127.0.0.1:4000 on the phone → localhost:4000 on the laptop.
-  // This is the ONLY reliable path; LAN IPs are blocked by router isolation.
-  if (Platform.OS === 'android') {
-    return 'http://127.0.0.1:4000';
+let cachedWorkingBaseUrl: string | null = null;
+
+export function getCandidateBaseUrls(): string[] {
+  const candidates: string[] = [];
+
+  if (cachedWorkingBaseUrl) {
+    candidates.push(cachedWorkingBaseUrl);
   }
+
+  const lanHost = hostFromExpo();
+  if (lanHost) {
+    candidates.push(`http://${lanHost}:4000`);
+  }
+
+  const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '');
+  if (fromEnv) {
+    candidates.push(fromEnv);
+  }
+
+  if (Platform.OS === 'android') {
+    candidates.push('http://10.37.123.166:4000');
+    candidates.push('http://127.0.0.1:4000');
+    candidates.push('http://10.0.2.2:4000');
+  } else {
+    candidates.push('http://localhost:4000');
+    candidates.push('http://127.0.0.1:4000');
+  }
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+export function getApiBaseUrl(): string {
+  if (cachedWorkingBaseUrl) return cachedWorkingBaseUrl;
+
+  const lanHost = hostFromExpo();
+  if (lanHost) return `http://${lanHost}:4000`;
 
   const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL?.replace(/\/$/, '');
   if (fromEnv) return fromEnv;
 
-  const lanHost = hostFromExpo();
-  if (lanHost) return `http://${lanHost}:4000`;
+  if (Platform.OS === 'android') {
+    return 'http://10.37.123.166:4000';
+  }
 
   return 'http://localhost:4000';
 }
@@ -122,6 +152,29 @@ function fetchWithTimeout(url: string, opts: RequestInit = {}, timeoutMs = 5000)
   return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
+async function fetchWithCandidateFallback(
+  pathAndQuery: string,
+  opts: RequestInit = {},
+  timeoutMs = 5000,
+): Promise<Response> {
+  const candidates = getCandidateBaseUrls();
+  let lastError: unknown = null;
+
+  for (const base of candidates) {
+    try {
+      const url = `${base}${pathAndQuery.startsWith('/') ? pathAndQuery : `/${pathAndQuery}`}`;
+      const response = await fetchWithTimeout(url, opts, timeoutMs);
+      cachedWorkingBaseUrl = base;
+      return response;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[API] Failed connecting to ${base}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  throw lastError || new Error('Failed to connect to backend server');
+}
+
 export async function startIdentifyJob(
   upload: string | IdentifyUpload,
   origin: IdentifyOrigin = 'app',
@@ -129,20 +182,35 @@ export async function startIdentifyJob(
   const image = typeof upload === 'string' ? { uri: upload } : upload;
   const filename = uploadFilename(image.uri, image.fileName, image.mimeType);
   console.log(`capture — uploading "${filename}" to backend`);
-  const response = await fetchWithTimeout(`${getApiBaseUrl()}/api/identify`, {
-    method: 'POST',
-    body: await buildIdentifyForm(image, origin),
-    headers: { Accept: 'application/json' },
-  }, 30000);
-  const job = await readJson<IdentifyResult>(response);
-  const short = String(job.job_id || '').replace(/-/g, '').slice(0, 8);
-  console.log(`capture — Job ${short} created, waiting for results`);
-  return job;
+
+  const candidates = getCandidateBaseUrls();
+  let lastError: unknown = null;
+
+  for (const base of candidates) {
+    try {
+      const form = await buildIdentifyForm(image, origin);
+      const response = await fetchWithTimeout(`${base}/api/identify`, {
+        method: 'POST',
+        body: form,
+        headers: { Accept: 'application/json' },
+      }, 30000);
+      cachedWorkingBaseUrl = base;
+      const job = await readJson<IdentifyResult>(response);
+      const short = String(job.job_id || '').replace(/-/g, '').slice(0, 8);
+      console.log(`capture — Job ${short} created, waiting for results`);
+      return job;
+    } catch (err) {
+      lastError = err;
+      console.warn(`[API] startIdentifyJob failed on ${base}:`, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  throw lastError || new Error('Could not upload image to backend');
 }
 
 export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
-  const url = `${getApiBaseUrl()}/jobs/${encodeURIComponent(jobId)}?_t=${Date.now()}`;
-  const response = await fetchWithTimeout(url, {
+  const path = `/jobs/${encodeURIComponent(jobId)}?_t=${Date.now()}`;
+  const response = await fetchWithCandidateFallback(path, {
     headers: { 
       Accept: 'application/json',
       'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
@@ -154,17 +222,18 @@ export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
 }
 
 export async function checkBackendHealth() {
-  const response = await fetchWithTimeout(`${getApiBaseUrl()}/health`, {}, 3000);
+  const response = await fetchWithCandidateFallback('/health', {}, 3000);
   return readJson(response);
 }
 
 export async function listRecentSearches(): Promise<RecentSearch[]> {
-  const response = await fetch(`${getApiBaseUrl()}/recent-searches`, {
+  const deviceId = await getDeviceId();
+  const response = await fetchWithCandidateFallback('/recent-searches', {
     headers: {
       Accept: 'application/json',
-      'x-device-id': await getDeviceId(),
+      'x-device-id': deviceId,
     },
-  });
+  }, 5000);
   const data = await readJson<{ searches?: RecentSearch[] }>(response);
   return Array.isArray(data.searches) ? data.searches : [];
 }
