@@ -145,6 +145,74 @@ npm run web      # web browser
 npm run android  # Android Emulator
 ```
 
+### Free iOS Share Extension testing
+
+This test flow lets Fit Stealer appear in the iPhone share sheet for one image:
+
+```text
+Photos / screenshot → Share → Fit Stealer → upload and identify
+→ local notification → tap notification → job results
+```
+
+It uses a native Share Extension with no App Group and no remote push
+notification entitlement, so it can be signed for personal-device testing with
+a free Apple Account. The free provisioning profile expires periodically, so
+Xcode may require you to rebuild and reinstall the app.
+
+Requirements:
+
+- A Mac with the full Xcode app installed
+- A physical iPhone connected to the Mac
+- An Apple Account added in **Xcode → Settings → Accounts**
+- A public HTTPS URL that forwards to the backend on port `4000`
+- The backend and AI service running with the required API keys
+
+Expo Go cannot load an iOS Share Extension. You must install a native build.
+
+1. Start the backend and AI service from the project root:
+
+   ```bash
+   npm run dev
+   ```
+
+2. Expose `http://localhost:4000` through an HTTPS development tunnel. Copy the
+   resulting URL, such as `https://your-tunnel.example`.
+
+3. Generate the native iOS project with that URL compiled into the extension:
+
+   ```bash
+   cd frontend
+   EXPO_PUBLIC_API_BASE_URL=https://your-tunnel.example \
+   npx expo prebuild --clean --platform ios
+   open ios/FitStealer.xcworkspace
+   ```
+
+4. In Xcode, select the **FitStealer** project. Under **Signing & Capabilities**,
+   select your Personal Team for both targets:
+
+   - `FitStealer`
+   - `FitStealerShare`
+
+   If Xcode reports that the bundle identifier is unavailable, replace
+   `com.fitstealer.app` in `frontend/app.json` with a unique reverse-domain
+   identifier, then repeat step 3. The extension identifier is generated from
+   it automatically.
+
+5. Select the connected iPhone as the run destination and press **Run**. On the
+   phone, trust the developer profile if iOS asks you to.
+
+6. Open Fit Stealer once and allow notifications. Then open Photos, select one
+   image, tap **Share**, and choose **Fit Stealer**. It may be under **More** the
+   first time.
+
+7. Keep the Fit Stealer share window open while it uploads and identifies the
+   outfit. When it says the results are ready, close the window and tap the
+   notification to open the job result.
+
+If Fit Stealer does not appear, confirm that the installed build contains the
+`FitStealerShare` target and that you are sharing exactly one image. Video and
+URL shares are intentionally disabled until the Stage 3 video ingest exists.
+
 ### Starting Services Individually
 
 **Backend (Express on port 4000):**

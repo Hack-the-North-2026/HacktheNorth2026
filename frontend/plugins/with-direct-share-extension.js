@@ -16,7 +16,6 @@ const { withShareExtensionXcodeProject } = require(path.join(
 ));
 
 const TARGET_NAME = 'FitStealerShare';
-const EXTENSION_BUNDLE_ID = 'com.fitstealer.app.ShareExtension';
 
 function withExtensionFiles(config, props) {
   return withDangerousMod(config, [
@@ -85,6 +84,7 @@ function withDirectShareExtension(config, options = {}) {
   if (!bundleIdentifier) {
     throw new Error('with-direct-share-extension requires ios.bundleIdentifier.');
   }
+  const extensionBundleIdentifier = `${bundleIdentifier}.ShareExtension`;
 
   config.extra = {
     ...config.extra,
@@ -102,7 +102,7 @@ function withDirectShareExtension(config, options = {}) {
               ),
               {
                 targetName: TARGET_NAME,
-                bundleIdentifier: EXTENSION_BUNDLE_ID,
+                bundleIdentifier: extensionBundleIdentifier,
                 entitlements: {},
               },
             ],
@@ -123,7 +123,7 @@ function withDirectShareExtension(config, options = {}) {
     [withExtensionFiles, { ...options, files }],
     [withShareExtensionXcodeProject, {
       targetName: TARGET_NAME,
-      bundleIdentifier: EXTENSION_BUNDLE_ID,
+      bundleIdentifier: extensionBundleIdentifier,
       deploymentTarget: '16.4',
       shareExtensionFiles: files,
     }],
