@@ -13,6 +13,7 @@ import {
   FONT_MEDIUM,
   FONT_BOLD,
   FONT_EXTRABOLD,
+  FONT_SEMIBOLD,
   FONT_SERIF_SEMIBOLD,
   FS_LG,
   FS_MD,
@@ -22,12 +23,15 @@ import {
 interface FitCardProps {
   match: Match;
   width: number;
-  height: number;
+  height?: number;
+  /** `compact` is the grid tile used on the results screen; `full` is the large carousel card. */
+  variant?: 'full' | 'compact';
 }
 
-export const FitCard: React.FC<FitCardProps> = ({ match, width, height }) => {
+export const FitCard: React.FC<FitCardProps> = ({ match, width, height, variant = 'full' }) => {
   const scale = useRef(new Animated.Value(1)).current;
   const isExact = match.match_type === 'exact';
+  const compact = variant === 'compact';
 
   const handlePress = () => {
     if (match.url) {
@@ -35,24 +39,69 @@ export const FitCard: React.FC<FitCardProps> = ({ match, width, height }) => {
     }
   };
 
+  const pressProps = {
+    onPress: handlePress,
+    onPressIn: () => Animated.spring(scale, { toValue: 0.97, useNativeDriver: true, friction: 7 }).start(),
+    onPressOut: () => Animated.spring(scale, { toValue: 1, useNativeDriver: true, friction: 7 }).start(),
+    accessibilityRole: 'button' as const,
+    accessibilityLabel: `Open ${match.title}${match.store_name ? ` at ${match.store_name}` : ''}`,
+  };
+
+  const thumbnail = (imageStyle: object, fallbackIcon: number) =>
+    match.image_url ? (
+      <Image source={{ uri: match.image_url }} style={imageStyle} resizeMode="cover" />
+    ) : (
+      <View style={[imageStyle, styles.imageFallback]}>
+        <Ionicons name="shirt-outline" size={fallbackIcon} color={ACCENT} />
+      </View>
+    );
+
+  if (compact) {
+    return (
+      <Animated.View style={{ width, transform: [{ scale }] }}>
+        <Pressable {...pressProps} style={styles.compactCard}>
+          <View style={[styles.compactImageWrap, { height: width }]}>
+            {thumbnail(styles.image, 34)}
+            <View
+              style={[
+                styles.compactBadge,
+                isExact ? styles.matchBadgeExact : styles.matchBadgeSimilar,
+              ]}
+            >
+              <Ionicons name={isExact ? 'checkmark-circle' : 'sparkles'} size={11} color="#FBF3E7" />
+              <Text style={styles.compactBadgeText}>{isExact ? 'Exact' : 'Similar'}</Text>
+            </View>
+          </View>
+
+          <View style={styles.compactBody}>
+            <Text style={styles.compactTitle} numberOfLines={2}>{match.title}</Text>
+            {match.store_name ? (
+              <Text style={styles.compactStore} numberOfLines={1}>{match.store_name}</Text>
+            ) : null}
+            <View style={styles.compactFooter}>
+              <Text style={styles.compactPrice} numberOfLines={1}>
+                {match.price
+                  ? `${match.currency ? `${match.currency} ` : ''}${match.price}`
+                  : 'View'}
+              </Text>
+              <Ionicons
+                name="arrow-up-outline"
+                size={14}
+                color={ACCENT}
+                style={{ transform: [{ rotate: '45deg' }] }}
+              />
+            </View>
+          </View>
+        </Pressable>
+      </Animated.View>
+    );
+  }
+
   return (
     <Animated.View style={{ width, height, transform: [{ scale }] }}>
-      <Pressable
-        onPress={handlePress}
-        onPressIn={() => Animated.spring(scale, { toValue: 0.97, useNativeDriver: true, friction: 7 }).start()}
-        onPressOut={() => Animated.spring(scale, { toValue: 1, useNativeDriver: true, friction: 7 }).start()}
-        style={styles.card}
-        accessibilityRole="button"
-        accessibilityLabel={`Open ${match.title}${match.store_name ? ` at ${match.store_name}` : ''}`}
-      >
+      <Pressable {...pressProps} style={styles.card}>
         <View style={styles.imageWrap}>
-          {match.image_url ? (
-            <Image source={{ uri: match.image_url }} style={styles.image} resizeMode="cover" />
-          ) : (
-            <View style={[styles.image, styles.imageFallback]}>
-              <Ionicons name="shirt-outline" size={52} color={ACCENT} />
-            </View>
-          )}
+          {thumbnail(styles.image, 52)}
 
           <View style={[styles.matchBadge, isExact ? styles.matchBadgeExact : styles.matchBadgeSimilar]}>
             <Ionicons name={isExact ? 'checkmark-circle' : 'sparkles'} size={14} color="#FBF3E7" />
@@ -201,5 +250,67 @@ const styles = StyleSheet.create({
     color: '#FBF3E7',
     fontSize: FS_MD,
     letterSpacing: 0.2,
+  },
+  compactCard: {
+    borderRadius: 20,
+    backgroundColor: SURFACE,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: BORDER,
+    elevation: 2,
+    shadowColor: '#3A2A18',
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
+  },
+  compactImageWrap: {
+    width: '100%',
+    backgroundColor: SURFACE_MUTED,
+  },
+  compactBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  compactBadgeText: {
+    fontFamily: FONT_BOLD,
+    fontSize: 10,
+    color: '#FBF3E7',
+    letterSpacing: 0.2,
+  },
+  compactBody: {
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 12,
+    gap: 4,
+  },
+  compactTitle: {
+    fontFamily: FONT_SEMIBOLD,
+    color: TEXT_PRIMARY,
+    fontSize: 13.5,
+    lineHeight: 18,
+  },
+  compactStore: {
+    fontFamily: FONT_MEDIUM,
+    color: TEXT_SECONDARY,
+    fontSize: FS_SM,
+  },
+  compactFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+  },
+  compactPrice: {
+    fontFamily: FONT_EXTRABOLD,
+    color: TEXT_PRIMARY,
+    fontSize: FS_MD,
+    flexShrink: 1,
   },
 });

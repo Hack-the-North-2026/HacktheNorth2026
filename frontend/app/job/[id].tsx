@@ -8,12 +8,14 @@ import {
   Animated,
   Easing,
   FlatList,
+  Modal,
   ScrollView,
   Dimensions,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { FitCard } from '../../components/FitCard';
 import { IdentifyStatusView } from '../../components/IdentifyStatus';
@@ -49,15 +51,13 @@ import {
 } from '../../lib/theme';
 
 const POLL_MS = 400;
-const POLL_DEADLINE_MS = 90_000;
-const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
-const HERO_HEIGHT = Math.round(SCREEN_H * 0.54);
-const CARD_WIDTH = Math.min(SCREEN_W * 0.76, 340);
-const CARD_HEIGHT = CARD_WIDTH * 1.32;
-const CARD_GAP = 16;
+const { width: SCREEN_W } = Dimensions.get('window');
+const H_PAD = 18;
+const GUTTER = 12;
+const COLUMN_W = Math.floor((SCREEN_W - H_PAD * 2 - GUTTER) / 2);
+const SOURCE_CHIP = 52;
 
-type Card = { key: string; match: Match | null; label: string };
-type Section = { category: GarmentCategory; title: string; cards: Card[] };
+type Card = { key: string; match: Match | null; label: string; category: GarmentCategory };
 
 function RevealOverlay() {
   const opacity = useRef(new Animated.Value(1)).current;
@@ -81,41 +81,43 @@ function RevealOverlay() {
 
 function EmptyMatchCard({ label }: { label: string }) {
   return (
-    <View style={[styles.emptyCard, { width: CARD_WIDTH, height: CARD_HEIGHT }]}>
-      <Ionicons name="search-outline" size={34} color={TEXT_MUTED} />
-      <Text style={styles.emptyCardTitle}>No listings found</Text>
-      <Text style={styles.emptyCardSubtitle}>{label}</Text>
+    <View style={[styles.emptyCard, { width: COLUMN_W, height: COLUMN_W + 72 }]}>
+      <Ionicons name="search-outline" size={26} color={TEXT_MUTED} />
+      <Text style={styles.emptyCardTitle}>No listings</Text>
+      <Text style={styles.emptyCardSubtitle} numberOfLines={2}>{label}</Text>
     </View>
   );
 }
 
-function JobHeroVideo({ uri }: { uri: string }) {
+function SourceVideo({ uri, style, playing }: { uri: string; style: object; playing: boolean }) {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = true;
     p.muted = true;
-    p.play();
   });
 
   useEffect(() => {
-    player.loop = true;
-    player.muted = true;
-    player.play();
-    // #region agent log
-    fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'A',location:'job/[id].tsx:JobHeroVideo',message:'job hero video player',data:{uriScheme:uri.slice(0,40),playerStatus:(player as {status?: string}).status||null,playing:Boolean((player as {playing?: boolean}).playing)},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
-  }, [player, uri]);
+    if (playing) {
+      player.currentTime = 0;
+      player.play();
+    } else {
+      player.pause();
+    }
+  }, [player, playing]);
 
-  return <VideoView player={player} style={styles.thumbnail} contentFit="cover" nativeControls={false} playsInline />;
+  return <VideoView player={player} style={style} contentFit="cover" nativeControls={false} playsInline />;
 }
 
 export default function JobScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { id } = useLocalSearchParams<{ id: string }>();
   const jobId = Array.isArray(id) ? id[0] : id;
   const previewRecord = jobId ? getJobPreviewRecord(jobId) : null;
   const preview = previewRecord?.uri ?? null;
   const [result, setResult] = useState<IdentifyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeCategory, setActiveCategory] = useState<GarmentCategory | 'all'>('all');
+  const [sourceOpen, setSourceOpen] = useState(false);
   const didHaptic = useRef(false);
 
   useEffect(() => {
@@ -190,9 +192,9 @@ export default function JobScreen() {
 
   const isVideo = isVideoJob(result, preview, previewRecord?.mediaType);
   const keyframes = result?.keyframes?.filter(Boolean) || [];
-  const showVideoHero = Boolean(isVideo && preview);
-  const heroUri = showVideoHero ? null : keyframes[0] || result?.thumbnail_url || preview;
-  const heroBranch = showVideoHero ? 'video' : heroUri ? 'image' : isVideo ? 'video-placeholder' : 'empty';
+  const sourceVideoUri = isVideo && preview ? preview : null;
+  const sourceImageUri = sourceVideoUri ? null : keyframes[0] || result?.thumbnail_url || preview;
+  const hasSource = Boolean(sourceVideoUri || sourceImageUri);
   const failed = Boolean(error) || result?.status === 'error';
   const failCopy = failedIdentifyCopy(
     error || result?.error || 'Something went wrong identifying this fit. Try another screenshot or clip.',
@@ -203,39 +205,41 @@ export default function JobScreen() {
   const loading = !failed && (!result || (result.status !== 'done' && result.status !== 'error'));
   const done = result?.status === 'done';
 
-  const sections: Section[] = useMemo(() => {
+  const cards: Card[] = useMemo(() => {
     if (!done || !result) return [];
-    const order: GarmentCategory[] = [];
-    const byCategory = new Map<GarmentCategory, Card[]>();
-
-    result.items.forEach(({ garment, matches }) => {
-      if (!byCategory.has(garment.category)) {
-        byCategory.set(garment.category, []);
-        order.push(garment.category);
-      }
-      const bucket = byCategory.get(garment.category)!;
+    return result.items.flatMap(({ garment, matches }): Card[] => {
       if (matches.length === 0) {
-        bucket.push({ key: `${garment.id}-empty`, match: null, label: garment.description });
-        return;
+        return [{
+          key: `${garment.id}-empty`,
+          match: null,
+          label: garment.description,
+          category: garment.category,
+        }];
       }
-      matches.forEach((match, matchIndex) => {
-        bucket.push({ key: `${garment.id}-${matchIndex}`, match, label: garment.description });
-      });
+      return matches.map((match, matchIndex) => ({
+        key: `${garment.id}-${matchIndex}`,
+        match,
+        label: garment.description,
+        category: garment.category,
+      }));
     });
-
-    return order.map((category) => ({
-      category,
-      title: CATEGORY_LABELS[category],
-      cards: byCategory.get(category) || [],
-    }));
   }, [done, result]);
 
-  const totalCards = sections.reduce((n, section) => n + section.cards.length, 0);
-  const empty = done && totalCards === 0;
+  const categories = useMemo(() => {
+    const seen: GarmentCategory[] = [];
+    cards.forEach((card) => {
+      if (!seen.includes(card.category)) seen.push(card.category);
+    });
+    return seen;
+  }, [cards]);
 
-  // #region agent log
-  fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'A',location:'job/[id].tsx:hero',message:'job hero source selection',data:{jobId,isVideo,heroBranch,showVideoHero,hasPreview:Boolean(preview),previewScheme:preview?preview.slice(0,32):null,previewMediaType:previewRecord?.mediaType||null,heroScheme:heroUri?heroUri.slice(0,48):null,keyframeCount:keyframes.length,mediaType:result?.media_type||null,status:result?.status||null,loading,done},timestamp:Date.now()})}).catch(()=>{});
-  // #endregion
+  const visibleCards = useMemo(
+    () => (activeCategory === 'all' ? cards : cards.filter((card) => card.category === activeCategory)),
+    [cards, activeCategory],
+  );
+
+  const totalCards = cards.length;
+  const empty = done && totalCards === 0;
 
   const headline = failed
     ? 'Couldn’t identify'
@@ -245,112 +249,122 @@ export default function JobScreen() {
         ? `${totalCards} listing${totalCards > 1 ? 's' : ''} found`
         : 'Nothing identified';
 
+  const sourceThumb = (style: object, playing = false) => {
+    if (sourceVideoUri) return <SourceVideo uri={sourceVideoUri} style={style} playing={playing} />;
+    if (sourceImageUri) return <Image source={{ uri: sourceImageUri }} style={style} resizeMode="cover" />;
+    return (
+      <View style={[style, styles.sourceFallback]}>
+        <Ionicons name={isVideo ? 'videocam' : 'image-outline'} size={20} color={ACCENT} />
+      </View>
+    );
+  };
+
   return (
     <View style={styles.container}>
-      <ScrollView
-        style={styles.pageScroll}
-        contentContainerStyle={styles.pageContent}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.heroWrap}>
-          {showVideoHero ? (
-            <JobHeroVideo uri={preview!} />
-          ) : heroUri ? (
-            <Image
-              source={{ uri: heroUri }}
-              style={styles.thumbnail}
-              resizeMode="cover"
-              onLoad={() => {
-                // #region agent log
-                fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'B',location:'job/[id].tsx:heroImage.onLoad',message:'hero image loaded',data:{jobId,heroScheme:heroUri.slice(0,48),isVideo},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
-              }}
-              onError={() => {
-                // #region agent log
-                fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'B',location:'job/[id].tsx:heroImage.onError',message:'hero image failed',data:{jobId,heroScheme:heroUri.slice(0,48),isVideo},timestamp:Date.now()})}).catch(()=>{});
-                // #endregion
-              }}
-            />
-          ) : isVideo ? (
-            <View style={[styles.thumbnail, styles.videoHeroCenter]}>
-              <Ionicons name="videocam" size={44} color={ACCENT} />
-              <Text style={styles.videoHeroBadge}>VIDEO CLIP</Text>
-            </View>
-          ) : (
-            <View style={styles.thumbnail} />
-          )}
-          <LinearGradient colors={['rgba(43,32,24,0.28)', 'transparent']} style={styles.heroTopScrim} />
-          <LinearGradient colors={['transparent', 'rgba(247,240,228,0.9)', BACKGROUND]} style={styles.heroBottomScrim} />
-          <View style={styles.heroText}>
-            <Text style={styles.eyebrow}>{loading ? 'SCANNING' : failed ? 'ERROR' : 'IDENTIFIED'}</Text>
-            <Text style={styles.headline}>{headline}</Text>
-          </View>
+      <View style={[styles.header, { paddingTop: Math.max(insets.top, 12) + 6 }]}>
+        <Pressable
+          style={styles.backButton}
+          onPress={() => router.replace('/')}
+          accessibilityRole="button"
+          accessibilityLabel="Back to capture"
+        >
+          <Ionicons name="chevron-back" size={20} color={TEXT_PRIMARY} />
+        </Pressable>
+
+        <View style={styles.headerText}>
+          <Text style={styles.eyebrow}>{loading ? 'SCANNING' : failed ? 'ERROR' : 'IDENTIFIED'}</Text>
+          <Text style={styles.headline} numberOfLines={1}>{headline}</Text>
         </View>
 
-        {loading && (
-          <View style={styles.loadingWrap}>
-            <IdentifyStatusView status={result?.status || 'queued'} />
-          </View>
-        )}
+        <Pressable
+          onPress={() => hasSource && setSourceOpen(true)}
+          disabled={!hasSource}
+          style={styles.sourceChip}
+          accessibilityRole="button"
+          accessibilityLabel="View the clip you scanned"
+        >
+          {sourceThumb(styles.sourceChipMedia)}
+          {isVideo ? (
+            <View style={styles.sourcePlayDot}>
+              <Ionicons name="play" size={9} color="#FBF3E7" />
+            </View>
+          ) : null}
+        </Pressable>
+      </View>
 
-        {loading && (
+      {done && categories.length > 1 && (
+        <View style={styles.filterRow}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.filterContent}
+          >
+            {(['all', ...categories] as const).map((category) => {
+              const active = activeCategory === category;
+              const label = category === 'all' ? 'All' : CATEGORY_LABELS[category];
+              return (
+                <Pressable
+                  key={category}
+                  onPress={() => setActiveCategory(category)}
+                  style={[styles.chip, active && styles.chipActive]}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: active }}
+                >
+                  <Text style={[styles.chipText, active && styles.chipTextActive]}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
+      {loading ? (
+        <ScrollView contentContainerStyle={styles.stateContent} showsVerticalScrollIndicator={false}>
           <IdentifyStatusView
             status={result?.status || 'queued'}
             mediaType={isVideo ? 'video' : 'image'}
             note={result?.steps?.[result.steps.length - 1]?.note}
           />
-        )}
-
-        {failed && (
+        </ScrollView>
+      ) : failed || empty ? (
+        <ScrollView contentContainerStyle={styles.stateContent} showsVerticalScrollIndicator={false}>
           <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>{failCopy.title}</Text>
-            <Text style={styles.emptySubtitle}>{failCopy.subtitle}</Text>
+            <Text style={styles.emptyTitle}>{failed ? failCopy.title : emptyCopy.title}</Text>
+            <Text style={styles.emptySubtitle}>{failed ? failCopy.subtitle : emptyCopy.subtitle}</Text>
           </View>
-        )}
+        </ScrollView>
+      ) : (
+        <FlatList
+          data={visibleCards}
+          keyExtractor={(card) => card.key}
+          numColumns={2}
+          columnWrapperStyle={styles.gridRow}
+          contentContainerStyle={[styles.gridContent, { paddingBottom: insets.bottom + 32 }]}
+          showsVerticalScrollIndicator={false}
+          renderItem={({ item }) =>
+            item.match ? (
+              <FitCard match={item.match} width={COLUMN_W} variant="compact" />
+            ) : (
+              <EmptyMatchCard label={item.label} />
+            )
+          }
+        />
+      )}
 
-        {empty && (
-          <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>{emptyCopy.title}</Text>
-            <Text style={styles.emptySubtitle}>{emptyCopy.subtitle}</Text>
-          </View>
-        )}
-
-        {done && sections.length > 0 && (
-          <View style={styles.sectionsContent}>
-            {sections.map((section) => (
-              <View key={section.category} style={styles.section}>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle}>{section.title}</Text>
-                  <Text style={styles.sectionCount}>
-                    {section.cards.length} {section.cards.length === 1 ? 'listing' : 'listings'}
-                  </Text>
-                </View>
-                <FlatList
-                  data={section.cards}
-                  keyExtractor={(card) => card.key}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  snapToInterval={CARD_WIDTH + CARD_GAP}
-                  decelerationRate="fast"
-                  contentContainerStyle={styles.sectionList}
-                  ItemSeparatorComponent={() => <View style={{ width: CARD_GAP }} />}
-                  renderItem={({ item }) =>
-                    item.match ? (
-                      <FitCard match={item.match} width={CARD_WIDTH} height={CARD_HEIGHT} />
-                    ) : (
-                      <EmptyMatchCard label={item.label} />
-                    )
-                  }
-                />
-              </View>
-            ))}
-          </View>
-        )}
-      </ScrollView>
-
-      <Pressable style={styles.backButton} onPress={() => router.replace('/')}>
-        <Ionicons name="chevron-back" size={22} color={TEXT_PRIMARY} />
-      </Pressable>
+      <Modal visible={sourceOpen} animationType="fade" transparent onRequestClose={() => setSourceOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setSourceOpen(false)} />
+          <View style={styles.modalMedia}>{sourceThumb(styles.modalMediaInner, sourceOpen)}</View>
+          <Pressable
+            style={[styles.modalClose, { top: Math.max(insets.top, 16) + 6 }]}
+            onPress={() => setSourceOpen(false)}
+            accessibilityRole="button"
+            accessibilityLabel="Close preview"
+          >
+            <Ionicons name="close" size={22} color={TEXT_PRIMARY} />
+          </Pressable>
+        </View>
+      </Modal>
 
       <RevealOverlay />
     </View>
@@ -362,81 +376,117 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: BACKGROUND,
   },
-  heroWrap: {
-    width: '100%',
-    height: HERO_HEIGHT,
-    backgroundColor: SURFACE_MUTED,
-  },
-  thumbnail: {
-    width: '100%',
-    height: '100%',
-  },
-  videoHeroCenter: {
+  header: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-  },
-  videoHeroBadge: {
-    marginTop: 10,
-    fontFamily: FONT_BOLD,
-    fontSize: FS_SM,
-    letterSpacing: 1.5,
-    color: ACCENT,
-  },
-  heroTopScrim: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 140,
-  },
-  heroBottomScrim: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 140,
-  },
-  heroText: {
-    position: 'absolute',
-    bottom: 20,
-    left: 24,
-    right: 24,
+    gap: 12,
+    paddingHorizontal: H_PAD,
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+    backgroundColor: BACKGROUND,
   },
   backButton: {
-    position: 'absolute',
-    top: 56,
-    left: 20,
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(255,253,248,0.85)',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: SURFACE,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
     borderColor: BORDER,
   },
+  headerText: {
+    flex: 1,
+  },
   eyebrow: {
     fontFamily: FONT_BOLD,
     color: ACCENT,
-    fontSize: FS_SM,
+    fontSize: 10.5,
     letterSpacing: 1.4,
-    marginBottom: 6,
+    marginBottom: 2,
   },
   headline: {
     fontFamily: FONT_SERIF_SEMIBOLD,
     color: TEXT_PRIMARY,
-    fontSize: FS_LG,
+    fontSize: 19,
     letterSpacing: 0.2,
   },
-  loadingWrap: {
-    paddingTop: 32,
+  sourceChip: {
+    width: SOURCE_CHIP,
+    height: SOURCE_CHIP,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: SURFACE_MUTED,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  sourceChipMedia: {
+    width: '100%',
+    height: '100%',
+  },
+  sourceFallback: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sourcePlayDot: {
+    position: 'absolute',
+    right: 4,
+    bottom: 4,
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(43,32,24,0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  filterRow: {
+    borderBottomWidth: 1,
+    borderBottomColor: BORDER,
+  },
+  filterContent: {
+    paddingHorizontal: H_PAD,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  chip: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 999,
+    backgroundColor: SURFACE,
+    borderWidth: 1,
+    borderColor: BORDER,
+  },
+  chipActive: {
+    backgroundColor: ACCENT,
+    borderColor: ACCENT,
+  },
+  chipText: {
+    fontFamily: FONT_SEMIBOLD,
+    fontSize: FS_SM,
+    color: TEXT_SECONDARY,
+  },
+  chipTextActive: {
+    color: '#FBF3E7',
+  },
+  gridContent: {
+    paddingHorizontal: H_PAD,
+    paddingTop: 16,
+  },
+  gridRow: {
+    gap: GUTTER,
+    marginBottom: GUTTER,
+  },
+  stateContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    paddingVertical: 32,
   },
   emptyState: {
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     paddingHorizontal: 32,
-    paddingTop: 48,
   },
   emptyTitle: {
     fontFamily: FONT_SEMIBOLD,
@@ -450,60 +500,54 @@ const styles = StyleSheet.create({
     fontSize: FS_SM,
     textAlign: 'center',
   },
-  pageScroll: {
-    flex: 1,
-  },
-  pageContent: {
-    flexGrow: 1,
-    paddingBottom: 40,
-  },
-  sectionsContent: {
-    paddingTop: 4,
-  },
-  section: {
-    marginTop: 24,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    paddingHorizontal: 24,
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontFamily: FONT_SERIF_SEMIBOLD,
-    color: TEXT_PRIMARY,
-    fontSize: FS_LG,
-  },
-  sectionCount: {
-    fontFamily: FONT_MEDIUM,
-    color: TEXT_MUTED,
-    fontSize: FS_SM,
-  },
-  sectionList: {
-    paddingHorizontal: 24,
-  },
   emptyCard: {
-    borderRadius: 30,
+    borderRadius: 20,
     backgroundColor: SURFACE,
     borderWidth: 1,
     borderColor: BORDER,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    paddingHorizontal: 24,
+    gap: 4,
+    paddingHorizontal: 14,
   },
   emptyCardTitle: {
     fontFamily: FONT_BOLD,
     color: TEXT_PRIMARY,
     fontSize: FS_MD,
-    marginTop: 6,
+    marginTop: 4,
   },
   emptyCardSubtitle: {
     fontFamily: FONT_MEDIUM,
     color: TEXT_SECONDARY,
     fontSize: FS_SM,
     textAlign: 'center',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(28,20,14,0.92)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalMedia: {
+    width: SCREEN_W,
+    aspectRatio: 9 / 16,
+    maxHeight: '82%',
+    borderRadius: 20,
+    overflow: 'hidden',
+  },
+  modalMediaInner: {
+    width: '100%',
+    height: '100%',
+  },
+  modalClose: {
+    position: 'absolute',
+    right: 18,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,253,248,0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   reveal: {
     zIndex: 10,
