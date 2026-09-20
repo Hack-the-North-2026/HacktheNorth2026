@@ -3,7 +3,6 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { IDENTIFY_STATUS_COPY, IdentifyStatus } from '../lib/types';
 import { ACCENT, TEXT_PRIMARY, SURFACE_MUTED, BORDER, FONT_SEMIBOLD, FS_MD } from '../lib/theme';
 import { identifyStatusCopy } from '../lib/identifyCopy';
-import { IdentifyStatus } from '../lib/types';
 
 const STEPS: IdentifyStatus[] = [
   'queued',

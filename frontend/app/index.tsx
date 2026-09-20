@@ -7,11 +7,10 @@ import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob, getIdentifyJob, isVideoUri } from '../lib/api';
 import { IDENTIFY_POLL_DEADLINE_MS, identifyStatusCopy, timeoutIdentifyCopy } from '../lib/identifyCopy';
 import { setJobPreview } from '../lib/resultStore';
-import { IdentifyStatus } from '../lib/types';
+import { IdentifyResult, IdentifyStatus } from '../lib/types';
 import { CaptureButton } from '../components/CaptureButton';
 import { InspectingView } from '../components/InspectingView';
 import { RippleTransition } from '../components/RippleTransition';
-import { IdentifyResult, IdentifyStatus } from '../lib/types';
 import {
   BACKGROUND,
   TEXT_PRIMARY,
@@ -151,6 +150,7 @@ export default function HomeScreen() {
         {
           text: 'Go to Settings',
           onPress: () => {
+            // @ts-ignore – optional Android-only module
             import('expo-intent-launcher').then(IntentLauncher => {
               IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.ACCESSIBILITY_SETTINGS).catch(() => {
                 Linking.openSettings();
@@ -224,8 +224,6 @@ export default function HomeScreen() {
             onFinished={() => ringFinishedRef.current?.()}
           />
         )}
-        <Text style={styles.scanTitle}>{isVideo ? 'Analyzing video frames' : 'Identifying your fit'}</Text>
-        <Text style={styles.scanSubtitle}>{identifyStatusCopy(jobStatus, isVideo ? 'video' : 'image', statusNote)}</Text>
       </Animated.View>
 
       <RippleTransition

@@ -1,6 +1,5 @@
 import { Sentry } from '../lib/sentry';
 import { useCallback, useEffect } from 'react';
-import { useEffect } from 'react';
 import { Platform } from 'react-native';
 import { router, Stack } from 'expo-router';
 import Constants from 'expo-constants';

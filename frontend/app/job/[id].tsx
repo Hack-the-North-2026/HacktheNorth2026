@@ -251,6 +251,8 @@ export default function JobScreen() {
           <View style={styles.loadingWrap}>
             <IdentifyStatusView status={result?.status || 'queued'} />
           </View>
+        )}
+
         {keyframes.length > 1 ? (
           <View style={styles.frameStrip}>
             <Text style={styles.frameStripLabel}>FRAMES WE USED</Text>
@@ -337,7 +339,7 @@ export default function JobScreen() {
         {done && result?.items.map(({ garment, matches }, index) => {
           const shown = preferStrongExact(matches);
           return (
-          <AnimatedSection key={garment.id} index={index}>
+          <View key={garment.id}>
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>{garment.description}</Text>
               {garment.accessibility_line ? (
@@ -348,12 +350,12 @@ export default function JobScreen() {
                   <Text style={styles.emptySubtitle}>No product matches yet for this item.</Text>
                 ) : (
                   shown.map((match, matchIndex) => (
-                    <FitCard key={`${garment.id}-${matchIndex}`} match={match} />
+                    <FitCard key={`${garment.id}-${matchIndex}`} match={match} width={CARD_WIDTH} height={CARD_HEIGHT} />
                   ))
                 )}
               </View>
             </View>
-          </AnimatedSection>
+          </View>
           );
         })}
       </ScrollView>
@@ -542,6 +544,27 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
     fontSize: FS_SM,
     textAlign: 'center',
+  },
+  summary: {
+    color: TEXT_SECONDARY,
+    fontSize: FS_SM,
+    fontFamily: FONT_MEDIUM,
+    lineHeight: 20,
+    marginHorizontal: 24,
+    marginTop: 16,
+    marginBottom: 4,
+  },
+  accessLine: {
+    color: TEXT_MUTED,
+    fontSize: FS_SM,
+    fontFamily: FONT_MEDIUM,
+    paddingHorizontal: 24,
+    marginTop: 4,
+  },
+  cardGroup: {
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    gap: CARD_GAP,
   },
   reveal: {
     zIndex: 10,
