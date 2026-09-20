@@ -342,12 +342,11 @@ export async function resolveSourceMode(forceMock) {
       return cachedSourceMode;
     }
   } catch {
-    // AI service down or no source route — fall through to fixtures.
+    // Timeout or down — do not cache mock so the next job can retry.
   }
 
-  cachedSourceMode = 'mock';
   logger.warn('source — AI source/rank tools are down; will use mock matches');
-  return cachedSourceMode;
+  return 'mock';
 }
 
 export async function retrieveCandidates(garment, jobId) {

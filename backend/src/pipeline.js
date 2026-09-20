@@ -16,7 +16,7 @@ import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
 import { canonicalizeQuery } from './queryCanonicalize.js';
 import { Sentry } from './sentry.js';
 import { agentLog, jobMsg, logger } from './logger.js';
-import { ingestVideo, perceive, perceiveVideo, resolveSourceMode, seeChips, seeVideoFrames } from './tools.js';
+import { ingestVideo, perceive, perceiveVideo, resetSourceModeCache, resolveSourceMode, seeChips, seeVideoFrames } from './tools.js';
 import { matchOutfit } from './matchingLoop.js';
 import { diagnoseFailStage, exactCount, preferStrongExact, seechipQueryCount } from './matchDisplay.js';
 
@@ -300,6 +300,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     }
 
     const cached = getCachedIdentify(imageHash, phash);
+    const forceMockSource = mocks.has('source');
+    const sourceModePromise = cached ? null : resolveSourceModeFn(forceMockSource);
     if (cached) {
       logger.info(jobMsg(jobId, `cache hit — returning identical IdentifyResult (${String(imageHash).slice(0, 12)})`));
       Sentry.logger.info('identify.cache_hit', {
@@ -594,8 +596,11 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       return;
     }
 
-    const forceMockSource = mocks.has('source');
-    const sourceMode = await resolveSourceModeFn(forceMockSource);
+    let sourceMode = sourceModePromise ? await sourceModePromise : await resolveSourceModeFn(forceMockSource);
+    if (sourceMode === 'mock' && !forceMockSource) {
+      resetSourceModeCache();
+      sourceMode = await resolveSourceModeFn(false);
+    }
     if (sourceMode === 'mock') {
       logger.warn(jobMsg(jobId, 'source — Shopify tools unavailable, using mock matches'));
     } else {

@@ -155,3 +155,52 @@ test('match-loop reformulates mid-band visual before browsing', async () => {
   assert.ok(steps.includes('retrying'));
   assert.equal(ranked[0].matches[0].url, 'https://shop.example/hw');
 });
+
+test('match-loop weak browse does not wait for mid reformulate', { timeout: 2000 }, async () => {
+  let releaseReformulate;
+  const reformulateGate = new Promise((resolve) => {
+    releaseReformulate = resolve;
+  });
+  let browseStarted = false;
+  const ranked = await matchOutfit(
+    [
+      {
+        id: 'jacket-1',
+        category: 'jacket',
+        search_query: 'black leather jacket',
+        queries: ['black leather jacket', 'silver zip hardware bomber'],
+      },
+      { id: 'pants-1', category: 'pants', search_query: 'cream trousers' },
+    ],
+    'job-parallel',
+    {
+      resolveMode: async () => 'match-loop',
+      retrieve: async (garment) => {
+        if (garment.search_query === 'silver zip hardware bomber') {
+          await reformulateGate;
+          return [{ title: 'Hardware Jacket', url: 'https://shop.example/hw', image_url: 'https://cdn.example/hw.jpg' }];
+        }
+        return [{ title: garment.category, url: `https://shop.example/${garment.id}`, image_url: 'https://cdn.example/x.jpg' }];
+      },
+      judge: async (garment, candidates) => {
+        if (candidates.some((item) => String(item.url).includes('/hw'))) {
+          return { visual_scores: [{ candidate_index: 0, score: 0.91, label: 'same_item' }], best: 0.91 };
+        }
+        if (garment.category === 'jacket') {
+          return { visual_scores: [{ candidate_index: 0, score: 0.7, label: 'similar' }], best: 0.7 };
+        }
+        return { visual_scores: [{ candidate_index: 0, score: 0.4, label: 'similar' }], best: 0.4 };
+      },
+      browse: async (garment) => {
+        browseStarted = true;
+        assert.equal(garment.category, 'pants');
+        releaseReformulate();
+        return [];
+      },
+      rank: async (_garment, candidates) =>
+        candidates.slice(0, 1).map((item) => ({ ...item, match_type: 'similar', confidence: 0.7, reason: 'close' })),
+    },
+  );
+  assert.equal(browseStarted, true);
+  assert.equal(ranked.length, 2);
+});

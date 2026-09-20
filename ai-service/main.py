@@ -22,6 +22,7 @@ Express / Cloudflare IdentifyAgent own the job loop and call these tools.
 from __future__ import annotations
 
 import base64
+import asyncio
 import os
 import logging
 import tempfile
@@ -342,7 +343,7 @@ def _chip_b64(body: SourceRankRequest | RetrieveRequest | JudgeRequest | BrowseR
 
 @app.get("/")
 @app.get("/health")
-def health_check():
+async def health_check():
     return {
         "status": "ok",
         "service": "Fit Stealer AI Service",
@@ -477,7 +478,9 @@ async def tools_see(request: Request):
         payload = SeeFramesRequest.model_validate(await request.json())
         if not payload.image_paths and not payload.frames:
             raise HTTPException(status_code=400, detail="image_paths or frames is required")
-        return _see_video_frames(payload.image_paths, payload.frame_metadata, payload.frames)
+        return await asyncio.to_thread(
+            _see_video_frames, payload.image_paths, payload.frame_metadata, payload.frames
+        )
 
     image = None
     if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
@@ -513,7 +516,7 @@ async def tools_see(request: Request):
         image_path = prepare_image_for_see(str(found), str(_UPLOAD_DIR / f"{uuid.uuid4()}.jpg"))
 
     try:
-        result = analyze_frames_with_vlm([image_path])
+        result = await asyncio.to_thread(analyze_frames_with_vlm, [image_path])
     except ValueError as e:
         logger.warning("see — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -715,7 +718,7 @@ async def api_identify(
         pass
 
     try:
-        result = analyze_frames_with_vlm([image_path])
+        result = await asyncio.to_thread(analyze_frames_with_vlm, [image_path])
     except ValueError as e:
         logger.warning("see — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -789,14 +792,18 @@ async def tools_ingest(
     video_path.write_bytes(content)
     logger.info("ingest — saved uploaded video (%s, %.1f MB)", suffix, len(content) / 1024 / 1024)
 
+    def _ingest() -> tuple[dict, list[dict]]:
+        ingested = ingest_video_frames(str(video_path))
+        kept = persist_selected_frames(ingested.get("frames") or [], str(_CHIPS_DIR), file_id)
+        _cleanup_stale_media()
+        return ingested, kept
+
     work_dir = ""
     try:
-        result = ingest_video_frames(str(video_path))
+        result, frames = await asyncio.to_thread(_ingest)
         work_dir = result.get("candidate_dir", "")
-        frames = persist_selected_frames(result.get("frames") or [], str(_CHIPS_DIR), file_id)
         image_paths = [frame["path"] for frame in frames]
 
-        _cleanup_stale_media()
         return IngestResponse(
             garments=[],
             outfit_summary=result.get("outfit_summary", ""),
@@ -872,24 +879,32 @@ async def api_identify_video(
 
     video_path.write_bytes(content)
 
-    work_dir = ""
-    try:
-        result = select_and_identify_from_video(str(video_path))
-        work_dir = result.get("candidate_dir", "")
-        garments = result.get("garments", [])
-        outfit_summary = result.get("outfit_summary", "")
-        frame_count = result.get("frame_count", 0)
-        frames = persist_selected_frames(result.get("frames") or [], str(_CHIPS_DIR), file_id)
-        garments = _crop_video_garments(garments, frames)
-        result["keyframes"] = keyframes_from_paths([frame["path"] for frame in frames]) or result.get("keyframes", [])
-
-        image_path = None
-        if frames:
-            thumb_src = Path(frames[0]["path"])
+    def _identify() -> tuple[dict, list[dict], list[dict], str | None]:
+        identified = select_and_identify_from_video(str(video_path))
+        kept = persist_selected_frames(identified.get("frames") or [], str(_CHIPS_DIR), file_id)
+        cropped = _crop_video_garments(identified.get("garments", []), kept)
+        identified["keyframes"] = keyframes_from_paths([frame["path"] for frame in kept]) or identified.get(
+            "keyframes", []
+        )
+        thumb = None
+        if kept:
+            thumb_src = Path(kept[0]["path"])
             if thumb_src.exists():
                 thumb_dest = _CHIPS_DIR / f"thumb_{file_id}.jpg"
                 thumb_dest.write_bytes(thumb_src.read_bytes())
-                image_path = str(thumb_dest)
+                thumb = str(thumb_dest)
+        return identified, kept, cropped, thumb
+
+    work_dir = ""
+    frames: list[dict] = []
+    garments: list[dict] = []
+    result: dict = {}
+    image_path = None
+    frame_count = 0
+    try:
+        result, frames, garments, image_path = await asyncio.to_thread(_identify)
+        work_dir = result.get("candidate_dir", "")
+        frame_count = result.get("frame_count", 0)
     except ValueError as e:
         logger.warning("identify-video — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -912,7 +927,7 @@ async def api_identify_video(
 
     return IdentifyVideoResponse(
         garments=garments,
-        outfit_summary=outfit_summary,
+        outfit_summary=result.get("outfit_summary", ""),
         frame_count=frame_count,
         image_path=image_path,
         keyframes=result.get("keyframes", []),

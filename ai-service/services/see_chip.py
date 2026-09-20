@@ -22,7 +22,7 @@ from services.query_normalize import canonicalize_query, unique_queries
 
 logger = logging.getLogger("fit_stealer.see_chip")
 
-MAX_WORKERS = 4
+MAX_WORKERS = 8
 
 _ATTRIBUTES_SCHEMA = {
     "type": "object",
