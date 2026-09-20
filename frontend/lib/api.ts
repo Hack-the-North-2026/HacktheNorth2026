@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { IdentifyResult, RecentSearch } from './types';
+import { IdentifyOrigin, IdentifyResult, RecentSearch } from './types';
 import { getDeviceId } from './device';
 
 function hostFromExpo(): string | null {
@@ -83,7 +83,10 @@ export function isVideoUri(uri?: string | null, mimeType?: string | null): boole
   return /\.(mp4|mov|webm|m4v|mkv)$/i.test(clean);
 }
 
-async function buildIdentifyForm(upload: IdentifyUpload): Promise<FormData> {
+async function buildIdentifyForm(
+  upload: IdentifyUpload,
+  origin: IdentifyOrigin,
+): Promise<FormData> {
   const form = new FormData();
   const isVideo = upload.type === 'video' || isVideoUri(upload.uri, upload.mimeType);
   const type = isVideo ? 'video' : 'image';
@@ -91,7 +94,7 @@ async function buildIdentifyForm(upload: IdentifyUpload): Promise<FormData> {
   const blob = await readUriAsBlob(upload.uri);
   form.append(type, blob, filename);
   form.append('type', type);
-  form.append('origin', 'app');
+  form.append('origin', origin);
   form.append('device_id', await getDeviceId());
   return form;
 }
@@ -108,13 +111,16 @@ async function readJson<T>(response: Response): Promise<T> {
   return data;
 }
 
-export async function startIdentifyJob(upload: string | IdentifyUpload): Promise<IdentifyResult> {
+export async function startIdentifyJob(
+  upload: string | IdentifyUpload,
+  origin: IdentifyOrigin = 'app',
+): Promise<IdentifyResult> {
   const image = typeof upload === 'string' ? { uri: upload } : upload;
   const filename = uploadFilename(image.uri, image.fileName, image.mimeType);
   console.log(`capture — uploading "${filename}" to backend`);
   const response = await fetch(`${getApiBaseUrl()}/api/identify`, {
     method: 'POST',
-    body: await buildIdentifyForm(image),
+    body: await buildIdentifyForm(image, origin),
     headers: { Accept: 'application/json' },
   });
   const job = await readJson<IdentifyResult>(response);

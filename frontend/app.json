@@ -34,6 +34,10 @@
           "cameraPermission": "Fit Stealer needs camera access to capture an outfit to identify."
         }
       ],
+      [
+        "./plugins/with-direct-share-extension",
+        {}
+      ],
       "@sentry/react-native"
     ]
   }

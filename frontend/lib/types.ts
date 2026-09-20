@@ -1,4 +1,9 @@
-export type IdentifyOrigin = 'app' | 'android_overlay' | 'android_qs' | 'share';
+export type IdentifyOrigin =
+  | 'app'
+  | 'android_overlay'
+  | 'android_qs'
+  | 'share'
+  | 'ios_share';
 
 export type GarmentCategory =
   | 'jacket'
