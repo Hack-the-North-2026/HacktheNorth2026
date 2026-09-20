@@ -1,72 +1,91 @@
-"""Structured, secret-conscious terminal logging for the AI service."""
+"""Human-readable terminal logging for the AI service."""
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from contextvars import ContextVar
+from datetime import datetime
 from typing import Any
 
+job_id_var: ContextVar[str | None] = ContextVar("fit_stealer_job_id", default=None)
 
-_SECRET_KEYS = (
-    "authorization",
-    "api_key",
-    "token",
-    "secret",
-    "password",
-    "cookie",
-    "base64",
-    "buffer",
-    "data",
+_NOISY_LOGGERS = (
+    "httpx",
+    "httpx2",
+    "httpcore",
+    "openai",
+    "openai._base_client",
+    "urllib3",
+    "urllib3.connectionpool",
+    "uvicorn.access",
+    "multipart",
 )
 
 
-def _sanitize(value: Any, depth: int = 0) -> Any:
-    if depth > 4:
-        return "[truncated]"
-    if isinstance(value, dict):
-        return {
-            str(key): (
-                "[redacted]"
-                if any(secret in str(key).lower() for secret in _SECRET_KEYS)
-                else _sanitize(item, depth + 1)
-            )
-            for key, item in value.items()
-        }
-    if isinstance(value, (list, tuple)):
-        return [_sanitize(item, depth + 1) for item in value[:20]]
-    if isinstance(value, str) and len(value) > 2000:
-        return value[:2000] + "..."
-    if isinstance(value, (str, int, float, bool)) or value is None:
-        return value
-    return str(value)
+def bind_job(job_id: str | None) -> None:
+    if job_id:
+        job_id_var.set(str(job_id))
 
 
-class JsonFormatter(logging.Formatter):
+def garment_name(garment: dict[str, Any] | None) -> str:
+    if not isinstance(garment, dict):
+        return "item"
+    return str(garment.get("category") or garment.get("id") or "item")
+
+
+class HumanFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        entry = {
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": record.levelname.lower(),
-            "service": "ai-service",
-            "logger": record.name,
-            "event": record.getMessage(),
-        }
-        context = getattr(record, "context", None)
-        if context:
-            entry.update(_sanitize(context))
+        now = datetime.now().strftime("%H:%M:%S")
+        if record.levelno >= logging.ERROR:
+            tag = "ERROR  "
+        elif record.levelno >= logging.WARNING:
+            tag = "WARN   "
+        else:
+            tag = ""
+        job = job_id_var.get()
+        job_bit = f"Job {job.replace('-', '')[:8]}  " if job else ""
+        line = f"{now}  {tag}{job_bit}{record.getMessage()}"
         if record.exc_info:
-            entry["exception"] = self.formatException(record.exc_info)
-        return json.dumps(entry, ensure_ascii=True)
+            line += "\n" + self.formatException(record.exc_info)
+        return line
+
+
+def agent_log(hypothesis_id: str, location: str, message: str, data: dict[str, Any] | None = None) -> None:
+    # #region agent log
+    try:
+        import json
+        import time
+
+        with open("/Users/mehrabzk/HTN2026/.cursor/debug-b95844.log", "a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "sessionId": "b95844",
+                        "runId": "stage1-audit",
+                        "hypothesisId": hypothesis_id,
+                        "location": location,
+                        "message": message,
+                        "data": data or {},
+                        "timestamp": int(time.time() * 1000),
+                    }
+                )
+                + "\n"
+            )
+    except Exception:
+        pass
+    # #endregion
 
 
 def configure_logging() -> None:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
+    handler.setFormatter(HumanFormatter())
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(level)
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)

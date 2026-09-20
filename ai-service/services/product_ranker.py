@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import TYPE_CHECKING, Any
 
+from logging_config import agent_log, garment_name
+
 if TYPE_CHECKING:
     from openai import OpenAI
+
+logger = logging.getLogger("fit_stealer.rank")
 
 
 _RANK_SCHEMA = {
@@ -68,6 +73,8 @@ def fallback_rank_candidates(
     garment: dict[str, Any], candidates: list[dict[str, Any]], max_matches: int = 3
 ) -> list[dict[str, Any]]:
     """Conservative local fallback: token overlap, always labelled similar."""
+    name = garment_name(garment)
+    logger.info("rank — %s: using local similar-only fallback", name)
     garment_terms = _words(
         " ".join(
             [
@@ -107,7 +114,9 @@ def rank_candidates(
     max_matches: int = 3,
 ) -> list[dict[str, Any]]:
     """Ask OpenAI to select indexes, then join trusted product data locally."""
+    name = garment_name(garment)
     if not candidates:
+        logger.info("rank — %s: skipped, no Shopify products to rank", name)
         return []
     if client is None:
         api_key = os.getenv("OPENAI_API_KEY", "")
@@ -116,6 +125,7 @@ def rank_candidates(
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)
+    logger.info("rank — %s: asking OpenAI to pick matches from %s products", name, len(candidates))
     safe_candidates = [
         {
             "candidate_index": index,
@@ -160,4 +170,33 @@ def rank_candidates(
         seen.add(index)
         if len(output) >= min(3, max(1, max_matches)):
             break
+    exact = sum(1 for match in output if match.get("match_type") == "exact")
+    similar = sum(1 for match in output if match.get("match_type") == "similar")
+    logger.info("rank — %s: kept %s exact, %s similar", name, exact, similar)
+    # #region agent log
+    agent_log(
+        "E",
+        "product_ranker.py:rank",
+        "ranked matches",
+        {
+            "category": name,
+            "candidateCount": len(candidates),
+            "kept": len(output),
+            "exact": exact,
+            "similar": similar,
+            "garmentBrand": garment.get("brand"),
+            "garmentQuery": str(garment.get("search_query") or "")[:120],
+            "matches": [
+                {
+                    "title": m.get("title"),
+                    "match_type": m.get("match_type"),
+                    "confidence": m.get("confidence"),
+                    "reason": m.get("reason"),
+                    "store_name": m.get("store_name"),
+                }
+                for m in output
+            ],
+        },
+    )
+    # #endregion
     return output

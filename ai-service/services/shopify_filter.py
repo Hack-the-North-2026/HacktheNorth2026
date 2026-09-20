@@ -8,6 +8,7 @@ ProductCandidate contract consumed by the ranker.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import time
 from pathlib import Path
@@ -15,6 +16,10 @@ from typing import Any
 
 import requests
 
+from logging_config import agent_log, garment_name
+
+
+logger = logging.getLogger("fit_stealer.shopify")
 
 SHOPIFY_CATALOG_URL = "https://catalog.shopify.com/api/ucp/mcp"
 DEFAULT_AGENT_PROFILE_URL = (
@@ -180,6 +185,9 @@ def search_shopify_catalog(
     if not query:
         raise ValueError("garment.search_query or garment.description is required")
     limit = max(1, min(int(limit), 10))
+    name = garment_name(garment)
+    chip_note = "with photo chip" if chip_base64 else "text only, no chip"
+    logger.info('shopify — %s: searching "%s" (%s)', name, query[:80], chip_note)
     catalog: dict[str, Any] = {
         "query": query,
         "filters": {
@@ -231,6 +239,7 @@ def search_shopify_catalog(
         )
         if not transient:
             raise
+        logger.warning("shopify — %s: transient error, retrying", name)
         time.sleep(0.25)
         try:
             response = client.post(
@@ -246,7 +255,28 @@ def search_shopify_catalog(
                 f"Shopify Global Catalog retry failed: {retry_exc}"
             ) from retry_exc
     candidates = [normalize_product(product) for product in products]
-    return [candidate for candidate in candidates if candidate is not None][:limit]
+    kept = [candidate for candidate in candidates if candidate is not None][:limit]
+    logger.info("shopify — %s: %s products", name, len(kept))
+    # #region agent log
+    agent_log(
+        "C",
+        "shopify_filter.py:search",
+        "shopify catalog results",
+        {
+            "category": name,
+            "query": query[:120],
+            "hasChip": bool(chip_base64),
+            "rawProducts": len(products),
+            "normalized": len(kept),
+            "droppedNormalize": len(products) - len(kept),
+            "titles": [c.get("title") for c in kept],
+            "prices": [c.get("price") for c in kept],
+            "hasUrl": [bool(c.get("url")) for c in kept],
+            "hasImage": [bool(c.get("image_url")) for c in kept],
+        },
+    )
+    # #endregion
+    return kept
 
 
 def filter_shopify_products(product_candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -79,16 +79,29 @@ async function waitForMetro() {
   return false;
 }
 
+async function ensureExpoGo() {
+  if (process.platform !== 'darwin') return;
+  const check = run('xcrun', ['simctl', 'get_app_container', 'booted', EXPO_GO_BUNDLE_ID]);
+  if (check.status === 0) return;
+
+  console.log('Expo Go is not installed on the simulator yet. Installing it now...');
+  try {
+    const { createRequire } = await import('node:module');
+    const req = createRequire(import.meta.url);
+    const { AppleDeviceManager } = req('expo/node_modules/@expo/cli/build/src/start/platforms/ios/AppleDeviceManager');
+    const manager = await AppleDeviceManager.resolveAsync({ device: { name: DEVICE } });
+    await manager.ensureExpoGoAsync('57.0.0');
+    console.log('Expo Go installed successfully.');
+  } catch (err) {
+    console.warn(`Could not auto-install Expo Go: ${err.message}`);
+  }
+}
+
 async function openOnSimulator() {
   if (process.platform !== 'darwin') return;
-  const launch = run('xcrun', ['simctl', 'launch', 'booted', EXPO_GO_BUNDLE_ID]);
-  if (launch.status !== 0) {
-    console.warn(
-      'Expo Go is not installed on the simulator yet. It will be installed the next time Expo can reach the device.',
-    );
-    console.warn(launch.stderr?.trim());
-  }
-  await delay(2500);
+  await ensureExpoGo();
+  run('xcrun', ['simctl', 'launch', 'booted', EXPO_GO_BUNDLE_ID]);
+  await delay(1500);
 
   for (let attempt = 1; attempt <= 6; attempt += 1) {
     const opened = run('xcrun', ['simctl', 'openurl', 'booted', EXPO_URL]);

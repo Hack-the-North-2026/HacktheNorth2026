@@ -3,6 +3,7 @@ import { Animated, Easing, Platform, Pressable, StyleSheet } from 'react-native'
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { PulseRings } from './PulseRings';
+import { ACCENT, ACCENT_GRADIENT } from '../lib/theme';
 
 interface CaptureButtonProps {
   size?: number;
@@ -11,8 +12,6 @@ interface CaptureButtonProps {
   onLongPress: () => void;
 }
 
-const ACCENT = '#7C7CFF';
-const ACCENT_DARK = '#3F3FBD';
 const useNativeDriver = Platform.OS !== 'web';
 
 export const CaptureButton: React.FC<CaptureButtonProps> = ({ size = 176, disabled, onPress, onLongPress }) => {
@@ -52,12 +51,12 @@ export const CaptureButton: React.FC<CaptureButtonProps> = ({ size = 176, disabl
       <PulseRings size={size} color={ACCENT} active={!disabled} />
       <Animated.View style={[styles.shadowWrap, { width: size, height: size, borderRadius: size / 2, transform: [{ scale }] }]}>
         <LinearGradient
-          colors={[ACCENT, ACCENT_DARK]}
+          colors={ACCENT_GRADIENT}
           start={{ x: 0.2, y: 0 }}
           end={{ x: 0.9, y: 1 }}
           style={[styles.gradient, { width: size, height: size, borderRadius: size / 2 }]}
         >
-          <Ionicons name="camera" size={size * 0.34} color="#F5F5FF" />
+          <Ionicons name="shirt" size={size * 0.34} color="#F5F5FF" />
         </LinearGradient>
       </Animated.View>
     </Pressable>
@@ -72,7 +71,7 @@ const styles = StyleSheet.create({
         boxShadow: '0px 8px 24px rgba(124, 124, 255, 0.55)',
       },
       default: {
-        shadowColor: '#7C7CFF',
+        shadowColor: ACCENT,
         shadowOpacity: 0.55,
         shadowRadius: 24,
         shadowOffset: { width: 0, height: 8 },

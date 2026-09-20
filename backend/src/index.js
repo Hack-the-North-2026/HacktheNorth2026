@@ -6,15 +6,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { logger } from './logger.js';
+import { bytesLabel, logger, shortId } from './logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(__dirname, '../../.env'), override: true });
 dotenv.config({ override: true });
 
-await import('./sentry.js');
+const { Sentry, sentryEnabled } = await import('./sentry.js');
+const { connectMongo, mongoStatus } = await import('./db.js');
 const { getJob } = await import('./jobs.js');
-const { isImageUpload, startIdentifyJob } = await import('./pipeline.js');
+const { isImageUpload, isVideoUpload, startIdentifyJob } = await import('./pipeline.js');
+const { listRecentSearches, sanitizeDeviceId } = await import('./recentSearches.js');
 
 const app = express();
 app.set('etag', false);
@@ -35,18 +37,17 @@ app.use((req, res, next) => {
   res.setHeader('x-request-id', requestId);
   const started = performance.now();
   res.on('finish', () => {
-    const context = {
-      request_id: requestId,
-      method: req.method,
-      path: req.path,
-      status: res.statusCode,
-      duration_ms: Math.round(performance.now() - started),
-    };
-    const routinePoll = req.method === 'GET' && req.path.startsWith('/jobs/');
-    if (res.statusCode >= 500) logger.error('http.request', new Error(`HTTP ${res.statusCode}`), context);
-    else if (res.statusCode >= 400) logger.warn('http.request', context);
-    else if (routinePoll) logger.debug('http.request', context);
-    else logger.info('http.request', context);
+    if (res.statusCode < 400) return;
+    const jobPoll = req.path.match(/^\/jobs\/([^/]+)$/);
+    if (req.path.startsWith('/json') || req.path === '/favicon.ico') return;
+    if (jobPoll && res.statusCode === 404) {
+      logger.warn(`Job ${shortId(jobPoll[1])} not found`);
+      return;
+    }
+    const took = Math.round(performance.now() - started);
+    const line = `HTTP ${res.statusCode} ${req.method} ${req.path} (${took}ms)`;
+    if (res.statusCode >= 500) logger.error(line);
+    else logger.warn(line);
   });
   next();
 });
@@ -90,6 +91,8 @@ app.get('/health', async (_req, res) => {
     status: 'ok',
     service: 'Fit Stealer Backend',
     aiService,
+    mongo: mongoStatus(),
+    sentry: sentryEnabled() ? 'ok' : 'unconfigured',
     expoHint: lan ? `http://${lan}:${PORT}` : `http://localhost:${PORT}`,
   });
 });
@@ -120,51 +123,85 @@ app.get('/dev/upload', (_req, res) => {
   res.sendFile(path.join(__dirname, '../public/dev-upload.html'));
 });
 
-app.get('/jobs/:id', (req, res) => {
+app.get('/jobs/:id', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
-  const job = getJob(req.params.id);
+  const job = await getJob(req.params.id);
   if (!job) {
     return res.status(404).json({ error: 'Job not found.' });
   }
   return res.json(job);
 });
 
+app.get('/recent-searches', async (req, res) => {
+  const deviceId = sanitizeDeviceId(req.get('x-device-id') || req.query.device_id);
+  if (!deviceId) {
+    return res.status(400).json({ error: 'A device id is required.' });
+  }
+  try {
+    const searches = await listRecentSearches(deviceId);
+    if (searches == null) {
+      return res.status(503).json({ error: 'Recent searches are unavailable.' });
+    }
+    return res.json({ searches });
+  } catch (error) {
+    logger.error('Could not list recent searches', error);
+    return res.status(503).json({ error: 'Recent searches are unavailable.' });
+  }
+});
+
 function handleIdentify(req, res) {
-  const type = String(req.body?.type || 'image');
+  if (!req.file) {
+    logger.warn('Upload rejected: no media file attached');
+    return res.status(400).json({ error: 'A file is required (multipart field "image" or "video").' });
+  }
+
+  const isVideo = isVideoUpload(req.file) || req.body?.type === 'video';
+  const type = isVideo ? 'video' : 'image';
   const origin = String(req.body?.origin || 'app');
 
-  if (type !== 'image') {
-    return res.status(400).json({ error: 'Stage 1 accepts still images only.' });
-  }
-  if (!req.file) {
-    return res.status(400).json({ error: 'An image file is required (multipart field "image").' });
-  }
-  if (!isImageUpload(req.file)) {
-    return res.status(400).json({ error: 'Upload a JPEG or PNG screenshot.' });
+  if (type === 'video') {
+    if (!isVideoUpload(req.file)) {
+      logger.warn('Upload rejected: not an MP4/MOV/WEBM video');
+      return res.status(400).json({ error: 'Upload an MP4, MOV, or WEBM video clip.' });
+    }
+  } else {
+    if (!isImageUpload(req.file)) {
+      logger.warn('Upload rejected: not a JPEG/PNG screenshot');
+      return res.status(400).json({ error: 'Upload a JPEG or PNG screenshot.' });
+    }
   }
 
-  logger.info('identify.accepted', {
-    request_id: req.requestId,
-    origin,
-    type,
-    filename: req.file.originalname,
-    mimetype: req.file.mimetype,
-    bytes: req.file.size,
-  });
+  const filename = decodeURIComponent(req.file.originalname || (type === 'video' ? 'clip' : 'screenshot'));
+  logger.blank();
+  logger.info(`Got ${type} "${filename}" (${bytesLabel(req.file.size)}) from ${origin}`);
 
-  const job = startIdentifyJob({ origin, file: req.file });
+  const deviceId = req.body?.device_id;
+  const job = startIdentifyJob({ origin, file: req.file, deviceId, type });
   return res.json(job);
 }
 
+const uploadFields = upload.fields([
+  { name: 'image', maxCount: 1 },
+  { name: 'video', maxCount: 1 },
+  { name: 'file', maxCount: 1 },
+]);
+
 function identifyUpload(req, res, next) {
-  upload.single('image')(req, res, (err) => {
-    if (!err) return next();
-    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(400).json({ error: 'Image is too large (45 MB max).' });
+  uploadFields(req, res, (err) => {
+    if (!err) {
+      if (!req.file) {
+        req.file = req.files?.video?.[0] || req.files?.image?.[0] || req.files?.file?.[0];
+      }
+      return next();
     }
-    return res.status(400).json({ error: err.message || 'Could not read the uploaded image.' });
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      logger.warn('Upload rejected: file is larger than 45 MB');
+      return res.status(400).json({ error: 'File is too large (45 MB max).' });
+    }
+    logger.warn(`Upload rejected: ${err.message || 'could not read the file'}`);
+    return res.status(400).json({ error: err.message || 'Could not read the uploaded file.' });
   });
 }
 
@@ -189,32 +226,36 @@ app.post('/api/process-url', async (req, res) => {
   }
 });
 
+Sentry.setupExpressErrorHandler(app);
+
 app.use((error, req, res, _next) => {
-  logger.error('http.unhandled', error, {
-    request_id: req.requestId,
-    method: req.method,
-    path: req.path,
-  });
+  logger.error(`Unhandled error on ${req.method} ${req.path}`, error);
   if (!res.headersSent) res.status(500).json({ error: 'Internal server error.' });
 });
 
 process.on('unhandledRejection', (reason) => {
   const error = reason instanceof Error ? reason : new Error(String(reason));
-  logger.error('process.unhandled_rejection', error);
+  logger.error('Unhandled promise rejection', error);
 });
 
 process.on('uncaughtException', (error) => {
-  logger.error('process.uncaught_exception', error);
+  logger.error('Uncaught exception', error);
   process.exitCode = 1;
 });
 
 app.listen(PORT, '0.0.0.0', () => {
-  logger.info('server.started', { url: `http://localhost:${PORT}` });
+  void connectMongo();
+  logger.info(`Backend ready at http://localhost:${PORT}`);
+  if (sentryEnabled()) {
+    logger.info('Sentry tracing and logs enabled');
+  } else {
+    logger.warn('Sentry DSN not set — add SENTRY_DSN to .env to turn on tracing');
+  }
   if (isDevUploadEnabled()) {
-    logger.info('server.dev_upload', { url: `http://localhost:${PORT}/dev/upload` });
+    logger.info(`Dev upload page: http://localhost:${PORT}/dev/upload`);
   }
   const lan = lanIPv4();
   if (lan) {
-    logger.info('server.expo_hint', { url: `http://${lan}:${PORT}` });
+    logger.info(`Phone should use: http://${lan}:${PORT}`);
   }
 });

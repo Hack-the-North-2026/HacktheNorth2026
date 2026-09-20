@@ -13,8 +13,13 @@ Architecture contract (§7.2):
 from __future__ import annotations
 
 from pathlib import Path
+import logging
 
 from PIL import Image
+
+from logging_config import agent_log
+
+logger = logging.getLogger("fit_stealer.crop")
 
 MAX_EDGE = 1280
 
@@ -34,6 +39,12 @@ def prepare_image_for_see(src_path: str, dest_path: str, max_edge: int = MAX_EDG
         img = img.resize(
             (max(1, int(width * scale)), max(1, int(height * scale))),
             Image.Resampling.LANCZOS,
+        )
+        logger.info(
+            "ingest — AI resized %sx%s so longest edge is %s",
+            width,
+            height,
+            max_edge,
         )
     out = Path(dest_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -73,14 +84,28 @@ def crop_garments(
 
     img = Image.open(image_path).convert("RGB")
     img_w, img_h = img.size
+    logger.info("crop — cutting chips from %sx%s image for %s garments", img_w, img_h, len(garments))
 
     updated = []
+    saved = 0
+    skipped = 0
+    chip_stats = []
     for garment in garments:
         g = dict(garment)  # shallow copy — don't mutate caller's dict
 
         bbox = g.get("bbox")
         if not bbox or len(bbox) != 4:
             g["chip_key"] = g.get("chip_key", "")
+            skipped += 1
+            chip_stats.append(
+                {
+                    "id": g.get("id"),
+                    "category": g.get("category"),
+                    "skipped": True,
+                    "reason": "missing_bbox",
+                    "bbox": bbox,
+                }
+            )
             updated.append(g)
             continue
 
@@ -109,6 +134,17 @@ def crop_garments(
         if chip_w < 32 or chip_h < 32:
             # Too small — VLM bbox was unreliable; skip this chip
             g["chip_key"] = g.get("chip_key", "")
+            skipped += 1
+            chip_stats.append(
+                {
+                    "id": g.get("id"),
+                    "category": g.get("category"),
+                    "skipped": True,
+                    "reason": "too_small",
+                    "bbox": bbox,
+                    "px": [chip_w, chip_h],
+                }
+            )
             updated.append(g)
             continue
 
@@ -118,7 +154,33 @@ def crop_garments(
         chip.save(chip_path, "JPEG", quality=90)
 
         g["chip_key"] = str(chip_path)
+        saved += 1
+        chip_stats.append(
+            {
+                "id": g.get("id"),
+                "category": g.get("category"),
+                "skipped": False,
+                "bbox": bbox,
+                "px": [chip_w, chip_h],
+                "image": [img_w, img_h],
+                "coverage": round((chip_w * chip_h) / max(1, img_w * img_h), 3),
+            }
+        )
         updated.append(g)
+
+    if skipped:
+        logger.info("crop — saved %s chips, skipped %s (bbox missing or too small)", saved, skipped)
+    else:
+        logger.info("crop — saved %s chips", saved)
+
+    # #region agent log
+    agent_log(
+        "B",
+        "cropper.py:crop_garments",
+        "chip crop results",
+        {"image": [img_w, img_h], "saved": saved, "skipped": skipped, "chips": chip_stats},
+    )
+    # #endregion
 
     return updated
 

@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { IdentifyResult } from './types';
+import { IdentifyOrigin, IdentifyResult, RecentSearch } from './types';
+import { getDeviceId } from './device';
 
 function hostFromExpo(): string | null {
   const hostUri =
@@ -76,15 +77,29 @@ export type IdentifyUpload = {
   uri: string;
   fileName?: string | null;
   mimeType?: string | null;
+  type?: 'image' | 'video';
 };
 
-async function buildIdentifyForm(upload: IdentifyUpload): Promise<FormData> {
+export function isVideoUri(uri?: string | null, mimeType?: string | null): boolean {
+  if (!uri) return false;
+  if (mimeType?.startsWith('video/')) return true;
+  const clean = uri.split('?')[0].toLowerCase();
+  return /\.(mp4|mov|webm|m4v|mkv)$/i.test(clean);
+}
+
+async function buildIdentifyForm(
+  upload: IdentifyUpload,
+  origin: IdentifyOrigin,
+): Promise<FormData> {
   const form = new FormData();
+  const isVideo = upload.type === 'video' || isVideoUri(upload.uri, upload.mimeType);
+  const type = isVideo ? 'video' : 'image';
   const filename = uploadFilename(upload.uri, upload.fileName, upload.mimeType);
   const blob = await readUriAsBlob(upload.uri);
-  form.append('image', blob, filename);
-  form.append('type', 'image');
-  form.append('origin', 'app');
+  form.append(type, blob, filename);
+  form.append('type', type);
+  form.append('origin', origin);
+  form.append('device_id', await getDeviceId());
   return form;
 }
 
@@ -107,14 +122,22 @@ function fetchWithTimeout(url: string, opts: RequestInit = {}, timeoutMs = 5000)
   return fetch(url, { ...opts, signal: controller.signal }).finally(() => clearTimeout(timer));
 }
 
-export async function startIdentifyJob(upload: string | IdentifyUpload): Promise<IdentifyResult> {
+export async function startIdentifyJob(
+  upload: string | IdentifyUpload,
+  origin: IdentifyOrigin = 'app',
+): Promise<IdentifyResult> {
   const image = typeof upload === 'string' ? { uri: upload } : upload;
+  const filename = uploadFilename(image.uri, image.fileName, image.mimeType);
+  console.log(`capture — uploading "${filename}" to backend`);
   const response = await fetchWithTimeout(`${getApiBaseUrl()}/api/identify`, {
     method: 'POST',
-    body: await buildIdentifyForm(image),
+    body: await buildIdentifyForm(image, origin),
     headers: { Accept: 'application/json' },
   }, 30000);
-  return readJson<IdentifyResult>(response);
+  const job = await readJson<IdentifyResult>(response);
+  const short = String(job.job_id || '').replace(/-/g, '').slice(0, 8);
+  console.log(`capture — Job ${short} created, waiting for results`);
+  return job;
 }
 
 export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
@@ -135,3 +158,13 @@ export async function checkBackendHealth() {
   return readJson(response);
 }
 
+export async function listRecentSearches(): Promise<RecentSearch[]> {
+  const response = await fetch(`${getApiBaseUrl()}/recent-searches`, {
+    headers: {
+      Accept: 'application/json',
+      'x-device-id': await getDeviceId(),
+    },
+  });
+  const data = await readJson<{ searches?: RecentSearch[] }>(response);
+  return Array.isArray(data.searches) ? data.searches : [];
+}

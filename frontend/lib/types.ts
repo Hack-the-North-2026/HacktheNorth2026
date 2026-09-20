@@ -1,4 +1,9 @@
-export type IdentifyOrigin = 'app' | 'android_overlay' | 'android_qs' | 'share';
+export type IdentifyOrigin =
+  | 'app'
+  | 'android_overlay'
+  | 'android_qs'
+  | 'share'
+  | 'ios_share';
 
 export type GarmentCategory =
   | 'jacket'
@@ -24,6 +29,7 @@ export type Garment = {
   bbox: [number, number, number, number];
   chip_key: string;
   accessibility_line: string;
+  source_frame_index?: number | null;
 };
 
 export type ProductCandidate = {
@@ -46,8 +52,8 @@ export type Match = ProductCandidate & {
 export type IdentifyStatus = 'queued' | 'ingesting' | 'seeing' | 'sourcing' | 'ranking' | 'done' | 'error';
 
 export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string> = {
-  queued: 'Queuing your screenshot…',
-  ingesting: 'Preparing the image…',
+  queued: 'Queuing your request…',
+  ingesting: 'Preparing media…',
   seeing: 'Looking at the outfit…',
   sourcing: 'Searching shops…',
   ranking: 'Picking the best matches…',
@@ -60,10 +66,21 @@ export type IdentifyResult = {
   status: IdentifyStatus;
   origin: IdentifyOrigin;
   thumbnail_url?: string;
+  keyframes?: string[];
   outfit_summary?: string;
   items: Array<{
     garment: Garment;
     matches: Match[];
   }>;
   error?: string;
+};
+
+export type RecentSearch = {
+  job_id: string;
+  created_at: string;
+  outfit_summary?: string;
+  item_count: number;
+  categories: string[];
+  thumbnail_url?: string;
+  preview_title?: string;
 };
