@@ -35,17 +35,8 @@
         }
       ],
       [
-        "expo-sharing",
-        {
-          "ios": {
-            "enabled": true,
-            "extensionBundleIdentifier": "com.fitstealer.app.ShareExtension",
-            "appGroupId": "group.com.fitstealer.app",
-            "activationRule": {
-              "supportsImageWithMaxCount": 1
-            }
-          }
-        }
+        "./plugins/with-direct-share-extension",
+        {}
       ],
       "@sentry/react-native"
     ]
