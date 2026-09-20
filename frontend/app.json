@@ -10,7 +10,7 @@
     "backgroundColor": "#050509",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.fitstealer.app"
+      "bundleIdentifier": "com.tangedy.fitstealer"
     },
     "android": {
       "package": "com.fitstealer.app",
