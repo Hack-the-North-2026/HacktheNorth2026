@@ -260,6 +260,8 @@ export default function HomeScreen() {
             status={scanJob?.status ?? ('queued' as IdentifyStatus)}
             items={scanJob?.items ?? []}
             keyframes={scanJob?.keyframes}
+            steps={scanJob?.steps}
+            logs={scanJob?.logs}
             done={jobDone}
             onFinished={() => ringFinishedRef.current?.()}
           />

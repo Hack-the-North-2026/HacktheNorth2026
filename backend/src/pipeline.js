@@ -189,6 +189,8 @@ function publicKeyframes(jobId, keyframes) {
   return publishJobKeyframes(jobId, keyframes);
 }
 
+const MAX_JOB_LOGS = 32;
+
 function commit(jobId, ctx, patch) {
   if (ctx.cancelled) return null;
   const next = updateJob(jobId, patch);
@@ -198,9 +200,39 @@ function commit(jobId, ctx, patch) {
   return next;
 }
 
+function appendLog(jobId, ctx, message, extra = {}) {
+  const text = String(message || '').trim();
+  const { status, ...patch } = extra;
+  if (!text) return Object.keys(patch).length ? commit(jobId, ctx, patch) : null;
+  const last = (ctx.logs || [])[ctx.logs.length - 1];
+  if (last?.message === text && last?.status === status) {
+    return Object.keys(patch).length ? commit(jobId, ctx, patch) : null;
+  }
+  ctx.logs = [
+    ...(ctx.logs || []),
+    { at: new Date().toISOString(), message: text, status },
+  ].slice(-MAX_JOB_LOGS);
+  return commit(jobId, ctx, { logs: ctx.logs, ...patch });
+}
+
 function step(jobId, ctx, status, note, extra = {}) {
   ctx.steps = [...(ctx.steps || []), { status, at: new Date().toISOString(), note }];
-  return commit(jobId, ctx, { status, steps: ctx.steps, ...extra });
+  const text = String(note || '').trim();
+  if (text) {
+    ctx.logs = [
+      ...(ctx.logs || []),
+      { at: new Date().toISOString(), message: text, status },
+    ].slice(-MAX_JOB_LOGS);
+  }
+  return commit(jobId, ctx, { status, steps: ctx.steps, logs: ctx.logs, ...extra });
+}
+
+function piecePhrase(garments) {
+  const labels = (garments || []).map((item) => item?.category).filter(Boolean);
+  if (labels.length === 0) return 'the outfit';
+  if (labels.length === 1) return labels[0];
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(', ')}, and ${labels[labels.length - 1]}`;
 }
 
 export function startIdentifyJob({ origin = 'app', file, deviceId, type, deps = {} } = {}) {
@@ -213,9 +245,11 @@ export function startIdentifyJob({ origin = 'app', file, deviceId, type, deps = 
     media_type: mediaType,
     device_id: sanitizeDeviceId(deviceId),
     items: [],
+    steps: [],
+    logs: [{ at: new Date().toISOString(), message: 'Request received', status: 'queued' }],
   });
 
-  const ctx = { cancelled: false, deviceId: sanitizeDeviceId(deviceId), steps: [] };
+  const ctx = { cancelled: false, deviceId: sanitizeDeviceId(deviceId), steps: [], logs: job.logs || [] };
   const limit = setTimeout(() => {
     ctx.cancelled = true;
     logger.error(jobMsg(job.job_id, `timed out — ${mediaType} took too long to identify`));
@@ -281,6 +315,12 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     });
     // #endregion
     commit(jobId, ctx, { status: 'ingesting' });
+    appendLog(
+      jobId,
+      ctx,
+      mediaType === 'video' ? 'Preparing the clip' : 'Preparing the photo',
+      { status: 'ingesting' },
+    );
     logger.info(jobMsg(jobId, `ingest — preparing ${mediaType}`));
     if (mediaType === 'image') {
       await downscaleUpload(file, jobId);
@@ -322,11 +362,13 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       });
       // #endregion
       const keyframes = publicKeyframes(jobId, cached.keyframes || []);
+      appendLog(jobId, ctx, 'Found a previous match for this look', { status: 'ranking' });
       commit(jobId, ctx, {
         status: 'done',
         outfit_summary: cached.outfit_summary || '',
         items: cached.items || [],
         steps: ctx.steps,
+        logs: ctx.logs,
         keyframes,
         thumbnail_url: keyframes[0] || undefined,
         empty_reason: cached.empty_reason,
@@ -518,6 +560,12 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
 
     const names = garments.map((garment) => garment.category).join(', ');
     logger.info(jobMsg(jobId, `see — ${garments.length} clothes: ${names}`));
+    appendLog(
+      jobId,
+      ctx,
+      `Found ${garments.length} ${garments.length === 1 ? 'piece' : 'pieces'} — ${piecePhrase(garments)}`,
+      { status: 'seeing' },
+    );
     for (const garment of garments) {
       if (!garment?.crop_fallback) continue;
       Sentry.logger.warn('video.crop_fallback', {
@@ -543,6 +591,12 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
           .filter((garment) => garment && garment.confidence >= 0.5);
         temps.push(...collectTempPaths({ garments }));
         logger.info(jobMsg(jobId, `see-chip — detailed ${garments.length} clothes`));
+        appendLog(
+          jobId,
+          ctx,
+          `Looked closer at ${garments.length} ${garments.length === 1 ? 'piece' : 'pieces'}`,
+          { status: 'detailing' },
+        );
       } catch (chipError) {
         logger.warn(jobMsg(jobId, 'see-chip — failed, using scene descriptions'));
         logger.warn(chipError instanceof Error ? chipError.message : String(chipError));
@@ -617,6 +671,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       } else {
         const raw = await matchOutfitFn(garments, jobId, {
           onStep: (status, note) => step(jobId, ctx, status, note),
+          onLog: (message, status) => appendLog(jobId, ctx, message, { status }),
         });
         ranked = raw.map((item) => {
           if (item.matches == null) {
