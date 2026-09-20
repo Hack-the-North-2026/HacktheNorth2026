@@ -9,11 +9,39 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from logging_config import agent_log, garment_name
+from services.visual_judge import EXACT_VISUAL_THRESHOLD
 
 if TYPE_CHECKING:
     from openai import OpenAI
 
 logger = logging.getLogger("fit_stealer.rank")
+
+DEMOTED_REASON = "Similar look, but the product photo does not confirm it is the same item."
+
+CATEGORY_ALIASES: dict[str, set[str]] = {
+    "jacket": {
+        "jacket", "bomber", "coat", "blazer", "parka", "anorak",
+        "windbreaker", "overshirt", "shacket", "field", "biker",
+    },
+    "shirt": {
+        "shirt", "tee", "t-shirt", "tshirt", "top", "blouse", "polo",
+        "sweater", "knit", "hoodie", "crewneck", "pullover", "cardigan",
+    },
+    "pants": {"pants", "trousers", "jeans", "chinos", "joggers", "sweatpants"},
+    "shorts": {"shorts", "short"},
+    "skirt": {"skirt", "skort"},
+    "dress": {"dress", "gown"},
+    "shoes": {
+        "shoes", "shoe", "sneaker", "sneakers", "boot", "boots",
+        "loafer", "loafers", "sandal", "sandals",
+    },
+    "bag": {"bag", "tote", "backpack", "crossbody", "purse", "handbag"},
+    "hat": {"hat", "cap", "beanie", "beret"},
+    "accessory": {
+        "scarf", "belt", "necklace", "jewelry", "watch", "glasses",
+        "sunglasses", "accessory",
+    },
+}
 
 
 _RANK_SCHEMA = {
@@ -54,9 +82,14 @@ _RANK_SCHEMA = {
 
 _SYSTEM_PROMPT = """You rank commerce candidates against one visibly detected garment.
 
+Each candidate may include visual_score (0-1) and visual_label (same_item|similar|different)
+from a vision model that compared the garment chip to the product photo.
+
 Return at most three strong matches. Drop weak matches completely.
-- exact: only the same item/SKU, supported by unusually specific visual or legible brand evidence.
+- exact: ONLY if visual_score >= 0.82 AND visual_label is same_item AND category/silhouette agree.
+  Never exact from title overlap, store name, or brand guess.
 - similar: same category with a convincing color, material, pattern, and silhouette match.
+- If visual_score is missing or below 0.82, you MUST choose similar or drop. Never exact.
 - Never promote a similar item to exact.
 - Never infer garment brand from store_name or candidate title alone.
 - If garment.brand is null or brand_cues is empty, do not claim brand agreement.
@@ -67,6 +100,52 @@ Return at most three strong matches. Drop weak matches completely.
 
 def _words(value: Any) -> set[str]:
     return set(re.findall(r"[a-z0-9]+", str(value).lower()))
+
+
+def category_agrees(garment: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """True when the product title is compatible with the detected category."""
+    category = str(garment.get("category") or "").lower().strip()
+    title = str(candidate.get("title") or "").lower()
+    if not category or not title:
+        return False
+    aliases = CATEGORY_ALIASES.get(category, {category})
+    return any(alias in title for alias in aliases)
+
+
+def _visual_map(visual_scores: list[dict[str, Any]] | None) -> dict[int, dict[str, Any]]:
+    mapped: dict[int, dict[str, Any]] = {}
+    for row in visual_scores or []:
+        index = row.get("candidate_index")
+        if isinstance(index, int):
+            mapped[index] = row
+    return mapped
+
+
+def _gate_exact(
+    match_type: str,
+    candidate: dict[str, Any],
+    garment: dict[str, Any],
+    visual: dict[str, Any] | None,
+) -> tuple[str, str | None]:
+    """Demote exact unless the chip was visually compared and scored high."""
+    if match_type != "exact":
+        return match_type, None
+    score = None
+    label = None
+    if visual:
+        try:
+            score = float(visual.get("score"))
+        except (TypeError, ValueError):
+            score = None
+        label = visual.get("label")
+    if (
+        score is None
+        or score < EXACT_VISUAL_THRESHOLD
+        or label != "same_item"
+        or not category_agrees(garment, candidate)
+    ):
+        return "similar", DEMOTED_REASON
+    return "exact", None
 
 
 def fallback_rank_candidates(
@@ -112,6 +191,7 @@ def rank_candidates(
     client: "OpenAI | None" = None,
     model: str | None = None,
     max_matches: int = 3,
+    visual_scores: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Ask OpenAI to select indexes, then join trusted product data locally."""
     name = garment_name(garment)
@@ -125,18 +205,40 @@ def rank_candidates(
         from openai import OpenAI
 
         client = OpenAI(api_key=api_key)
-    logger.info("rank — %s: asking OpenAI to pick matches from %s products", name, len(candidates))
-    safe_candidates = [
-        {
+    visuals = _visual_map(visual_scores)
+    logger.info(
+        "rank — %s: asking OpenAI to pick matches from %s products (%s visual scores)",
+        name,
+        len(candidates),
+        len(visuals),
+    )
+    safe_garment = {
+        key: garment.get(key)
+        for key in (
+            "category",
+            "description",
+            "search_query",
+            "attributes",
+            "brand",
+            "brand_cues",
+        )
+    }
+    safe_candidates = []
+    for index, item in enumerate(candidates):
+        row = {
             "candidate_index": index,
             "title": item.get("title", ""),
             "store_name": item.get("store_name"),
             "price": item.get("price"),
             "currency": item.get("currency"),
         }
-        for index, item in enumerate(candidates)
-    ]
-    user_payload = {"garment": garment, "candidates": safe_candidates}
+        visual = visuals.get(index)
+        if visual:
+            row["visual_score"] = visual.get("score")
+            row["visual_label"] = visual.get("label")
+            row["visual_reason"] = visual.get("reason")
+        safe_candidates.append(row)
+    user_payload = {"garment": safe_garment, "candidates": safe_candidates}
     completion = client.chat.completions.create(
         model=model or os.getenv("OPENAI_RANK_MODEL", "gpt-4.1-mini"),
         messages=[
@@ -145,6 +247,7 @@ def rank_candidates(
         ],
         response_format=_RANK_SCHEMA,
         temperature=0,
+        seed=0,
     )
     content = completion.choices[0].message.content
     ranking = json.loads(content or '{"matches": []}')
@@ -158,21 +261,41 @@ def rank_candidates(
         reason = str(selection.get("reason", "")).strip()
         if not reason:
             continue
+        visual = visuals.get(index)
+        match_type, demoted_reason = _gate_exact(
+            selection["match_type"], candidates[index], garment, visual
+        )
+        if demoted_reason:
+            reason = demoted_reason
+            confidence = min(confidence, 0.74)
         match = dict(candidates[index])
         match.update(
             {
-                "match_type": selection["match_type"],
+                "match_type": match_type,
                 "confidence": confidence,
                 "reason": reason,
             }
         )
+        if visual:
+            match["visual_score"] = visual.get("score")
+            match["visual_label"] = visual.get("label")
         output.append(match)
         seen.add(index)
         if len(output) >= min(3, max(1, max_matches)):
             break
     exact = sum(1 for match in output if match.get("match_type") == "exact")
     similar = sum(1 for match in output if match.get("match_type") == "similar")
-    logger.info("rank — %s: kept %s exact, %s similar", name, exact, similar)
+    best = max(
+        (float(match["visual_score"]) for match in output if match.get("visual_score") is not None),
+        default=None,
+    )
+    logger.info(
+        "rank — %s: kept %s exact, %s similar (best visual %s)",
+        name,
+        exact,
+        similar,
+        f"{best:.2f}" if isinstance(best, float) else "none",
+    )
     # #region agent log
     agent_log(
         "E",
@@ -184,6 +307,7 @@ def rank_candidates(
             "kept": len(output),
             "exact": exact,
             "similar": similar,
+            "bestVisual": best,
             "garmentBrand": garment.get("brand"),
             "garmentQuery": str(garment.get("search_query") or "")[:120],
             "matches": [
@@ -191,6 +315,8 @@ def rank_candidates(
                     "title": m.get("title"),
                     "match_type": m.get("match_type"),
                     "confidence": m.get("confidence"),
+                    "visual_score": m.get("visual_score"),
+                    "visual_label": m.get("visual_label"),
                     "reason": m.get("reason"),
                     "store_name": m.get("store_name"),
                 }

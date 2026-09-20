@@ -43,7 +43,7 @@ export const logger = {
 };
 
 export function agentLog(hypothesisId, location, message, data = {}) {
-  // #region agent log
+  if (process.env.FIT_STEALER_DEBUG_LOG !== '1') return;
   fetch('http://127.0.0.1:7692/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': 'b95844' },
@@ -57,5 +57,4 @@ export function agentLog(hypothesisId, location, message, data = {}) {
       timestamp: Date.now(),
     }),
   }).catch(() => {});
-  // #endregion
 }
