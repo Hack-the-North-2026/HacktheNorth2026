@@ -25,7 +25,6 @@ import {
   isVideoJob,
   timeoutIdentifyCopy,
 } from '../../lib/identifyCopy';
-import { preferStrongExact } from '../../lib/matches';
 import { getJobPreview } from '../../lib/resultStore';
 import { Sentry, withIdentifySpan } from '../../lib/sentry';
 import { CATEGORY_LABELS, GarmentCategory, IdentifyResult, Match } from '../../lib/types';
@@ -174,6 +173,7 @@ export default function JobScreen() {
   const keyframes = result?.keyframes?.filter(Boolean) || [];
   const selectedFrame = keyframes[Math.min(heroIndex, Math.max(keyframes.length - 1, 0))];
   const heroUri = selectedFrame || result?.thumbnail_url || (isVideo ? null : preview);
+  const heroBranch = heroUri ? 'image' : isVideo ? 'video-placeholder' : 'empty';
   const failed = Boolean(error) || result?.status === 'error';
   const failCopy = failedIdentifyCopy(
     error || result?.error || 'Something went wrong identifying this fit. Try another screenshot or clip.',
@@ -213,6 +213,14 @@ export default function JobScreen() {
 
   const totalCards = sections.reduce((n, section) => n + section.cards.length, 0);
   const empty = done && totalCards === 0;
+
+  // #region agent log
+  fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'A',location:'job/[id].tsx:hero',message:'job hero source selection',data:{jobId,isVideo,heroBranch,hasPreview:Boolean(preview),previewScheme:preview?preview.slice(0,32):null,previewLooksLikeVideo:preview?/\.(mp4|mov|webm|m4v|mkv)$/i.test(preview.split('?')[0]):false,heroScheme:heroUri?heroUri.slice(0,48):null,heroLen:heroUri?heroUri.length:0,thumbnailScheme:result?.thumbnail_url?String(result.thumbnail_url).slice(0,48):null,keyframeCount:keyframes.length,mediaType:result?.media_type||null,status:result?.status||null,loading,done},timestamp:Date.now()})}).catch(()=>{});
+  if (done && result) {
+    fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b5ee46'},body:JSON.stringify({sessionId:'b5ee46',runId:'post-fix',hypothesisId:'A',location:'job/[id].tsx:render',message:'job screen stray-text sources',data:{jobId,itemCount:result.items.length,sectionTitles:sections.map((s)=>s.title),hasOutfitSummary:Boolean(result.outfit_summary),willRenderDuplicateItemBlock:false,willRenderSummary:false,willRenderAccessLines:false},timestamp:Date.now()})}).catch(()=>{});
+  }
+  // #endregion
+
   const headline = failed
     ? 'Couldn’t identify'
     : loading
@@ -230,7 +238,21 @@ export default function JobScreen() {
       >
         <View style={styles.heroWrap}>
           {heroUri ? (
-            <Image source={{ uri: heroUri }} style={styles.thumbnail} resizeMode="cover" />
+            <Image
+              source={{ uri: heroUri }}
+              style={styles.thumbnail}
+              resizeMode="cover"
+              onLoad={() => {
+                // #region agent log
+                fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'B',location:'job/[id].tsx:heroImage.onLoad',message:'hero image loaded',data:{jobId,heroScheme:heroUri.slice(0,48),isVideo},timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+              }}
+              onError={() => {
+                // #region agent log
+                fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'B',location:'job/[id].tsx:heroImage.onError',message:'hero image failed',data:{jobId,heroScheme:heroUri.slice(0,48),isVideo},timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+              }}
+            />
           ) : isVideo ? (
             <View style={[styles.thumbnail, styles.videoHeroCenter]}>
               <Ionicons name="videocam" size={44} color={ACCENT} />
@@ -332,32 +354,6 @@ export default function JobScreen() {
             ))}
           </View>
         )}
-        {done && !empty && result?.outfit_summary ? (
-          <Text style={styles.summary}>{result.outfit_summary}</Text>
-        ) : null}
-
-        {done && result?.items.map(({ garment, matches }, index) => {
-          const shown = preferStrongExact(matches);
-          return (
-          <View key={garment.id}>
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>{garment.description}</Text>
-              {garment.accessibility_line ? (
-                <Text style={styles.accessLine}>{garment.accessibility_line}</Text>
-              ) : null}
-              <View style={styles.cardGroup}>
-                {shown.length === 0 ? (
-                  <Text style={styles.emptySubtitle}>No product matches yet for this item.</Text>
-                ) : (
-                  shown.map((match, matchIndex) => (
-                    <FitCard key={`${garment.id}-${matchIndex}`} match={match} width={CARD_WIDTH} height={CARD_HEIGHT} />
-                  ))
-                )}
-              </View>
-            </View>
-          </View>
-          );
-        })}
       </ScrollView>
 
       <Pressable style={styles.backButton} onPress={() => router.replace('/')}>
@@ -544,27 +540,6 @@ const styles = StyleSheet.create({
     color: TEXT_SECONDARY,
     fontSize: FS_SM,
     textAlign: 'center',
-  },
-  summary: {
-    color: TEXT_SECONDARY,
-    fontSize: FS_SM,
-    fontFamily: FONT_MEDIUM,
-    lineHeight: 20,
-    marginHorizontal: 24,
-    marginTop: 16,
-    marginBottom: 4,
-  },
-  accessLine: {
-    color: TEXT_MUTED,
-    fontSize: FS_SM,
-    fontFamily: FONT_MEDIUM,
-    paddingHorizontal: 24,
-    marginTop: 4,
-  },
-  cardGroup: {
-    paddingHorizontal: 24,
-    paddingTop: 12,
-    gap: CARD_GAP,
   },
   reveal: {
     zIndex: 10,

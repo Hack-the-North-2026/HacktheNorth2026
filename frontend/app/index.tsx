@@ -73,6 +73,9 @@ export default function HomeScreen() {
     try {
       const job = await startIdentifyJob(asset);
       setJobPreview(job.job_id, asset.uri);
+      // #region agent log
+      fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'pre-fix',hypothesisId:'C',location:'index.tsx:setJobPreview',message:'stored job preview uri',data:{jobId:job.job_id,uriScheme:asset.uri.slice(0,40),mimeType:asset.mimeType||null,fileName:asset.fileName||null,detectedVideo:isVideoUri(asset.uri,asset.mimeType)},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       jobIdRef.current = job.job_id;
       setScanJob(job);
       setJobStatus(job.status);
