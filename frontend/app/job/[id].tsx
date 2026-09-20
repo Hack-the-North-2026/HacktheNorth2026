@@ -35,6 +35,9 @@ import {
   FONT_SEMIBOLD,
   FONT_BOLD,
   FONT_SERIF_SEMIBOLD,
+  FS_LG,
+  FS_MD,
+  FS_SM,
 } from '../../lib/theme';
 
 const POLL_MS = 400;
@@ -310,7 +313,7 @@ const styles = StyleSheet.create({
   videoHeroBadge: {
     marginTop: 10,
     fontFamily: FONT_BOLD,
-    fontSize: 12,
+    fontSize: FS_SM,
     letterSpacing: 1.5,
     color: ACCENT,
   },
@@ -350,14 +353,14 @@ const styles = StyleSheet.create({
   eyebrow: {
     fontFamily: FONT_BOLD,
     color: ACCENT,
-    fontSize: 12,
+    fontSize: FS_SM,
     letterSpacing: 1.4,
     marginBottom: 6,
   },
   headline: {
     fontFamily: FONT_SERIF_SEMIBOLD,
     color: TEXT_PRIMARY,
-    fontSize: 28,
+    fontSize: FS_LG,
     letterSpacing: 0.2,
   },
   loadingWrap: {
@@ -373,13 +376,13 @@ const styles = StyleSheet.create({
   emptyTitle: {
     fontFamily: FONT_SEMIBOLD,
     color: TEXT_PRIMARY,
-    fontSize: 16,
+    fontSize: FS_MD,
     textAlign: 'center',
   },
   emptySubtitle: {
     fontFamily: FONT_MEDIUM,
     color: TEXT_SECONDARY,
-    fontSize: 14,
+    fontSize: FS_SM,
     textAlign: 'center',
   },
   pageScroll: {
@@ -405,12 +408,12 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontFamily: FONT_SERIF_SEMIBOLD,
     color: TEXT_PRIMARY,
-    fontSize: 22,
+    fontSize: FS_LG,
   },
   sectionCount: {
     fontFamily: FONT_MEDIUM,
     color: TEXT_MUTED,
-    fontSize: 13,
+    fontSize: FS_SM,
   },
   sectionList: {
     paddingHorizontal: 24,
@@ -428,13 +431,13 @@ const styles = StyleSheet.create({
   emptyCardTitle: {
     fontFamily: FONT_BOLD,
     color: TEXT_PRIMARY,
-    fontSize: 15,
+    fontSize: FS_MD,
     marginTop: 6,
   },
   emptyCardSubtitle: {
     fontFamily: FONT_MEDIUM,
     color: TEXT_SECONDARY,
-    fontSize: 13,
+    fontSize: FS_SM,
     textAlign: 'center',
   },
   reveal: {

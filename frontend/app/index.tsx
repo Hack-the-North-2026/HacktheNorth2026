@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react';
-import { StyleSheet, Text, View, Animated, Alert, Platform, Pressable, Linking, LayoutChangeEvent } from 'react-native';
+import { StyleSheet, Text, View, Animated, Alert, Platform, Pressable, Linking, Dimensions } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,9 +7,9 @@ import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob, getIdentifyJob, isVideoUri } from '../lib/api';
 import { setJobPreview } from '../lib/resultStore';
 import { CaptureButton } from '../components/CaptureButton';
-import { ScanningCircle } from '../components/ScanningCircle';
-import { SilhouetteFlash } from '../components/SilhouetteFlash';
+import { InspectingView } from '../components/InspectingView';
 import { RippleTransition } from '../components/RippleTransition';
+import { IdentifyResult, IdentifyStatus } from '../lib/types';
 import {
   BACKGROUND,
   TEXT_PRIMARY,
@@ -19,8 +19,10 @@ import {
   ACCENT,
   FONT_MEDIUM,
   FONT_SEMIBOLD,
-  FONT_BOLD,
   FONT_SERIF_SEMIBOLD,
+  FS_LG,
+  FS_MD,
+  FS_SM,
 } from '../lib/theme';
 
 type Phase = 'idle' | 'scanning' | 'revealing';
@@ -28,6 +30,8 @@ type Phase = 'idle' | 'scanning' | 'revealing';
 const POLL_MS = 400;
 const POLL_DEADLINE_MS = 90_000;
 const CIRCLE_SIZE = 200;
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const RIPPLE_ORIGIN = { x: SCREEN_W / 2, y: SCREEN_H / 2 };
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -36,9 +40,8 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const [phase, setPhase] = useState<Phase>('idle');
   const [uri, setUri] = useState<string | null>(null);
-  const [circleOrigin, setCircleOrigin] = useState({ x: 0, y: 0 });
   const [jobDone, setJobDone] = useState(false);
-  const [keyframes, setKeyframes] = useState<string[]>([]);
+  const [scanJob, setScanJob] = useState<IdentifyResult | null>(null);
   const jobIdRef = useRef<string | null>(null);
   const ringFinishedRef = useRef<(() => void) | null>(null);
 
@@ -52,14 +55,9 @@ export default function HomeScreen() {
     ]).start();
   };
 
-  const onCircleLayout = (event: LayoutChangeEvent) => {
-    const { x, y, width, height } = event.nativeEvent.layout;
-    setCircleOrigin({ x: x + width / 2, y: y + height / 2 });
-  };
-
   const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
     setUri(asset.uri);
-    setKeyframes([]);
+    setScanJob(null);
     setJobDone(false);
     setPhase('scanning');
     setIdleVisible(false);
@@ -67,9 +65,10 @@ export default function HomeScreen() {
       const job = await startIdentifyJob(asset);
       setJobPreview(job.job_id, asset.uri);
       jobIdRef.current = job.job_id;
+      setScanJob(job);
 
-      // Keep the circle up until the job is actually finished — starting the
-      // job only means it was accepted, not that a result exists yet.
+      // Keep the inspecting view up until the job is actually finished —
+      // starting the job only means it was accepted, not that a result exists.
       const started = Date.now();
       let latest = job;
       while (latest.status !== 'done' && latest.status !== 'error') {
@@ -78,12 +77,10 @@ export default function HomeScreen() {
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         latest = await getIdentifyJob(job.job_id);
-        if (latest.keyframes && latest.keyframes.length > 0) {
-          setKeyframes(latest.keyframes);
-        }
+        setScanJob(latest);
       }
 
-      // Let the ring's fast finish animation land before rippling away.
+      // Let the progress bar's fast finish animation land before rippling away.
       await new Promise<void>((resolve) => {
         ringFinishedRef.current = resolve;
         setJobDone(true);
@@ -178,28 +175,23 @@ export default function HomeScreen() {
         )}
       </Animated.View>
 
-      <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity, pointerEvents: 'none' }]}>
+      <Animated.View style={[StyleSheet.absoluteFill, { opacity: scanOpacity, pointerEvents: phase === 'idle' ? 'none' : 'auto' }]}>
         {uri && phase !== 'idle' && (
-          <View onLayout={onCircleLayout} style={styles.circleStack}>
-            <SilhouetteFlash active={phase === 'scanning'} size={296} />
-            <ScanningCircle
-              uri={uri}
-              keyframes={keyframes}
-              size={CIRCLE_SIZE}
-              done={jobDone}
-              onFinished={() => ringFinishedRef.current?.()}
-            />
-          </View>
+          <InspectingView
+            uri={uri}
+            isVideo={isVideo}
+            status={scanJob?.status ?? ('queued' as IdentifyStatus)}
+            items={scanJob?.items ?? []}
+            keyframes={scanJob?.keyframes}
+            done={jobDone}
+            onFinished={() => ringFinishedRef.current?.()}
+          />
         )}
-        <Text style={styles.scanTitle}>{isVideo ? 'Analyzing video frames' : 'Identifying your fit'}</Text>
-        <Text style={styles.scanSubtitle}>
-          {isVideo ? 'Selecting clearest frames & matching items' : 'Matching the pieces to real listings'}
-        </Text>
       </Animated.View>
 
       <RippleTransition
-        originX={circleOrigin.x}
-        originY={circleOrigin.y}
+        originX={RIPPLE_ORIGIN.x}
+        originY={RIPPLE_ORIGIN.y}
         active={phase === 'revealing'}
         onDone={onRippleDone}
       />
@@ -218,15 +210,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
   },
-  scanningLayer: {
-    gap: 24,
-  },
-  circleStack: {
-    width: CIRCLE_SIZE,
-    height: CIRCLE_SIZE,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   recentButton: {
     position: 'absolute',
     right: 20,
@@ -242,7 +225,7 @@ const styles = StyleSheet.create({
   },
   recentLabel: {
     color: TEXT_PRIMARY,
-    fontSize: 13.5,
+    fontSize: FS_SM,
     fontFamily: FONT_SEMIBOLD,
   },
   buttonWrap: {
@@ -252,28 +235,17 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   caption: {
-    fontSize: 30,
+    fontSize: FS_LG,
     fontFamily: FONT_SERIF_SEMIBOLD,
     color: TEXT_PRIMARY,
     textAlign: 'center',
     letterSpacing: 0.2,
   },
   subCaption: {
-    fontSize: 15,
+    fontSize: FS_MD,
     fontFamily: FONT_MEDIUM,
     color: TEXT_MUTED,
     marginTop: 8,
-  },
-  scanTitle: {
-    fontSize: 20,
-    fontFamily: FONT_BOLD,
-    color: TEXT_PRIMARY,
-    marginTop: 4,
-  },
-  scanSubtitle: {
-    fontSize: 14,
-    fontFamily: FONT_MEDIUM,
-    color: TEXT_MUTED,
   },
   overlayButton: {
     marginTop: 28,
@@ -286,7 +258,7 @@ const styles = StyleSheet.create({
   },
   overlayButtonText: {
     color: ACCENT,
-    fontSize: 13.5,
+    fontSize: FS_SM,
     fontFamily: FONT_SEMIBOLD,
     letterSpacing: 0.3,
   },

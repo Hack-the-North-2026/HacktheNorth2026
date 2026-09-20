@@ -14,6 +14,9 @@ import {
   FONT_BOLD,
   FONT_EXTRABOLD,
   FONT_SERIF_SEMIBOLD,
+  FS_LG,
+  FS_MD,
+  FS_SM,
 } from '../lib/theme';
 
 interface FitCardProps {
@@ -139,7 +142,7 @@ const styles = StyleSheet.create({
   },
   matchBadgeText: {
     fontFamily: FONT_BOLD,
-    fontSize: 12.5,
+    fontSize: FS_SM,
     color: '#FBF3E7',
     letterSpacing: 0.2,
   },
@@ -163,8 +166,8 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: FONT_SERIF_SEMIBOLD,
     color: TEXT_PRIMARY,
-    fontSize: 19,
-    lineHeight: 25,
+    fontSize: FS_LG,
+    lineHeight: 30,
   },
   metaRow: {
     flexDirection: 'row',
@@ -174,13 +177,13 @@ const styles = StyleSheet.create({
   store: {
     fontFamily: FONT_MEDIUM,
     color: TEXT_SECONDARY,
-    fontSize: 14,
+    fontSize: FS_MD,
     flexShrink: 1,
   },
   price: {
     fontFamily: FONT_EXTRABOLD,
     color: TEXT_PRIMARY,
-    fontSize: 17,
+    fontSize: FS_MD,
     marginLeft: 12,
   },
   ctaButton: {
@@ -196,7 +199,7 @@ const styles = StyleSheet.create({
   ctaText: {
     fontFamily: FONT_BOLD,
     color: '#FBF3E7',
-    fontSize: 15,
+    fontSize: FS_MD,
     letterSpacing: 0.2,
   },
 });

@@ -25,7 +25,10 @@ import {
   FONT_MEDIUM,
   FONT_SEMIBOLD,
   FONT_BOLD,
-  FONT_EXTRABOLD,
+  FONT_SERIF_SEMIBOLD,
+  FS_LG,
+  FS_MD,
+  FS_SM,
 } from '../lib/theme';
 
 function formatRelativeTime(iso: string): string {
@@ -169,8 +172,8 @@ const styles = StyleSheet.create({
     flex: 1,
     textAlign: 'center',
     color: TEXT_PRIMARY,
-    fontSize: 18,
-    fontFamily: FONT_EXTRABOLD,
+    fontSize: FS_LG,
+    fontFamily: FONT_SERIF_SEMIBOLD,
   },
   headerSpacer: {
     width: 40,
@@ -204,17 +207,17 @@ const styles = StyleSheet.create({
   },
   rowTitle: {
     color: TEXT_PRIMARY,
-    fontSize: 15.5,
+    fontSize: FS_MD,
     fontFamily: FONT_BOLD,
   },
   rowSummary: {
     color: TEXT_SECONDARY,
-    fontSize: 13,
+    fontSize: FS_SM,
     fontFamily: FONT_MEDIUM,
   },
   rowMeta: {
     color: TEXT_MUTED,
-    fontSize: 12,
+    fontSize: FS_SM,
     fontFamily: FONT_MEDIUM,
   },
   centered: {
@@ -226,13 +229,13 @@ const styles = StyleSheet.create({
   },
   emptyTitle: {
     color: TEXT_PRIMARY,
-    fontSize: 16,
+    fontSize: FS_MD,
     fontFamily: FONT_SEMIBOLD,
     textAlign: 'center',
   },
   emptySubtitle: {
     color: TEXT_SECONDARY,
-    fontSize: 14,
+    fontSize: FS_SM,
     fontFamily: FONT_MEDIUM,
     textAlign: 'center',
   },

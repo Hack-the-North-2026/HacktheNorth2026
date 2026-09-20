@@ -1,7 +1,7 @@
 import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { IDENTIFY_STATUS_COPY, IdentifyStatus } from '../lib/types';
-import { ACCENT, TEXT_PRIMARY, SURFACE_MUTED, BORDER, FONT_SEMIBOLD } from '../lib/theme';
+import { ACCENT, TEXT_PRIMARY, SURFACE_MUTED, BORDER, FONT_SEMIBOLD, FS_MD } from '../lib/theme';
 
 const STEPS: IdentifyStatus[] = ['queued', 'ingesting', 'seeing', 'sourcing', 'ranking'];
 
@@ -50,7 +50,7 @@ const styles = StyleSheet.create({
   },
   title: {
     color: TEXT_PRIMARY,
-    fontSize: 17,
+    fontSize: FS_MD,
     fontFamily: FONT_SEMIBOLD,
     textAlign: 'center',
   },
