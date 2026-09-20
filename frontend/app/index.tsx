@@ -113,9 +113,25 @@ export default function HomeScreen() {
 
   // Opens Android Accessibility Settings so the user can enable the overlay service.
   const openAccessibilitySettings = () => {
-    Linking.openSettings().catch(() => {
-      Alert.alert('Open Settings', 'Go to Settings → Accessibility → Fit Stealer to enable the overlay.');
-    });
+    Alert.alert(
+      'Enable Fit Stealer',
+      '1. Tap "Installed apps"\n2. Tap "Fit Stealer"\n3. Turn the switch ON\n4. Tap "Allow"',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Go to Settings',
+          onPress: () => {
+            import('expo-intent-launcher').then(IntentLauncher => {
+              IntentLauncher.startActivityAsync(IntentLauncher.ActivityAction.ACCESSIBILITY_SETTINGS).catch(() => {
+                Linking.openSettings();
+              });
+            }).catch(() => {
+              Linking.openSettings();
+            });
+          }
+        }
+      ]
+    );
   };
 
   const takePhoto = async () => {
