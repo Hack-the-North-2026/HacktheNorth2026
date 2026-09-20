@@ -4,6 +4,8 @@ Fit Stealer identifies what is on screen — starting with clothes from a screen
 
 The long-term vision is **Shazam for anything on your screen**. Build order is screenshot-in-app (Stage 1), Android device-native frame capture (Stage 2), short video (Stage 3), then any category / accessibility (Stage 4). See [OVERVIEW.md](./OVERVIEW.md) for product stages and [ARCHITECTURE.md](./ARCHITECTURE.md) for how we execute them.
 
+The long-term vision is **Shazam for anything on your screen**, starting with clothing. See [OVERVIEW.md](./OVERVIEW.md) for product goals, MVP scope, and the app-first then device-native plan.
+
 ---
 
 ## 🏗️ Project Architecture
