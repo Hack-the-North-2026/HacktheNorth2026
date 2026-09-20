@@ -101,6 +101,7 @@ export async function seeVideoAndCrop(file, jobId) {
     keyframes: Array.isArray(data.keyframes) ? data.keyframes : [],
     image_paths: Array.isArray(data.image_paths) ? data.image_paths : [],
     frames: Array.isArray(data.frames) ? data.frames : [],
+    duration: Number.isFinite(Number(data.duration)) ? Number(data.duration) : null,
   };
 }
 
@@ -118,6 +119,7 @@ function normalizeIngest(data) {
     frames,
     keyframes: Array.isArray(data?.keyframes) ? data.keyframes : [],
     image_path: imagePaths[0] || data?.image_path || '',
+    duration: Number.isFinite(Number(data?.duration)) ? Number(data.duration) : null,
   };
 }
 
@@ -173,6 +175,7 @@ export async function seeVideoFrames(ingested, jobId) {
     keyframes: ingested?.keyframes || [],
     image_paths: imagePaths,
     frames,
+    duration: Number.isFinite(Number(ingested?.duration)) ? Number(ingested.duration) : null,
   };
 }
 
@@ -272,18 +275,25 @@ export async function perceive(file, jobId, { detail = true } = {}) {
   }
 }
 
-function chipPayload(garment) {
-  const chipKey = garment?.chip_key;
-  if (!chipKey || typeof chipKey !== 'string') return null;
-  if (!path.isAbsolute(chipKey)) return null;
-  try {
-    const bytes = readFileSync(chipKey);
-    const ext = path.extname(chipKey).toLowerCase();
-    const contentType = ext === '.png' ? 'image/png' : 'image/jpeg';
-    return { content_type: contentType, data: bytes.toString('base64') };
-  } catch {
-    return null;
+const IMAGE_CHIP_EXT = /\.(jpe?g|png|webp)$/i;
+
+export function chipPayload(garment) {
+  const keys = [garment?.chip_key, garment?.alt_chip_key];
+  for (const chipKey of keys) {
+    if (!chipKey || typeof chipKey !== 'string') continue;
+    if (!path.isAbsolute(chipKey)) continue;
+    if (!IMAGE_CHIP_EXT.test(chipKey)) continue;
+    try {
+      const bytes = readFileSync(chipKey);
+      if (!bytes?.length) continue;
+      const ext = path.extname(chipKey).toLowerCase();
+      const contentType = ext === '.png' ? 'image/png' : 'image/jpeg';
+      return { content_type: contentType, data: bytes.toString('base64') };
+    } catch {
+      continue;
+    }
   }
+  return null;
 }
 
 async function postJson(pathname, body, timeoutMs, jobId) {
@@ -340,6 +350,8 @@ export async function resolveSourceMode(forceMock) {
 
 export async function retrieveCandidates(garment, jobId) {
   const chip = chipPayload(garment);
+  const label = garment?.category || garment?.id || 'item';
+  logger.info(jobMsg(jobId, `source — ${label}: ${chip ? 'chip like on' : 'text only'}`));
   const { response, data } = await postJson(
     '/tools/retrieve',
     { garment, chip },

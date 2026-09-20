@@ -81,7 +81,7 @@ class IngestV1Tests(unittest.TestCase):
         self.assertEqual(persisted[0]["index"], 2)
 
     @patch("main.detail_garments")
-    @patch("main.crop_garments")
+    @patch("main.crop_video_garments")
     @patch("main.analyze_frames_with_vlm")
     def test_see_json_crops_video_frames(self, analyze, crop, detail):
         dest = Path(tempfile.gettempdir()) / "fit-stealer-chips"

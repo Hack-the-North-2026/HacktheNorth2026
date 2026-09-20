@@ -71,11 +71,20 @@ export function scrubChipKeys(
   return (items || []).map((item) => {
     const garment = item?.garment;
     const chipKey = garment?.chip_key;
-    if (!garment || typeof chipKey !== "string" || !/fit-stealer/i.test(chipKey)) return item;
-    return {
-      ...item,
-      garment: { ...garment, chip_key: String(garment.id || "") },
-    };
+    const altKey = garment?.alt_chip_key;
+    if (!garment) return item;
+    const next = { ...garment };
+    let changed = false;
+    if (typeof chipKey === "string" && /fit-stealer/i.test(chipKey)) {
+      next.chip_key = String(garment.id || "");
+      changed = true;
+    }
+    if (typeof altKey === "string" && /fit-stealer/i.test(altKey)) {
+      next.alt_chip_key = "";
+      changed = true;
+    }
+    if (!changed) return item;
+    return { ...item, garment: next };
   });
 }
 

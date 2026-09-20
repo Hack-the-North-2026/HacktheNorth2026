@@ -37,7 +37,7 @@ class IdentifyVideoV0Tests(unittest.TestCase):
 
     @patch("main.detail_garments")
     @patch("main.cleanup_work_dir")
-    @patch("main.crop_garments")
+    @patch("main.crop_video_garments")
     @patch("main.select_and_identify_from_video")
     def test_identify_video_crops_and_skips_seechip(self, ingest, crop, cleanup, detail):
         work = Path(tempfile.mkdtemp(prefix="fit-stealer-video-v0-"))
@@ -77,7 +77,7 @@ class IdentifyVideoV0Tests(unittest.TestCase):
 
     @patch("main.detail_garments")
     @patch("main.cleanup_work_dir")
-    @patch("main.crop_garments")
+    @patch("main.crop_video_garments")
     @patch("main.select_and_identify_from_video")
     def test_identify_video_ignores_detail_flag(self, ingest, crop, cleanup, detail):
         ingest.return_value = {
@@ -94,7 +94,7 @@ class IdentifyVideoV0Tests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         detail.assert_not_called()
-        crop.assert_not_called()
+        crop.assert_called_once()
 
 
 if __name__ == "__main__":

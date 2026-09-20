@@ -91,6 +91,7 @@ class VideoIngestResult(TypedDict, total=False):
     keyframes: list[str]
     image_paths: list[str]
     frames: list[dict]
+    duration: float
 
 
 # ---------------------------------------------------------------------------
@@ -469,12 +470,13 @@ def ingest_video_frames(video_path: str) -> VideoIngestResult:
     from services.baseten_vlm import select_best_video_frames
 
     meta = validate_video(video_path)
+    duration_s = float(meta["duration"])
     logger.info(
         "ingest — processing %.1fs video (%dx%d)",
-        meta["duration"], meta["width"], meta["height"],
+        duration_s, meta["width"], meta["height"],
     )
 
-    candidates, work_dir = extract_candidate_frames(video_path, duration_s=meta["duration"])
+    candidates, work_dir = extract_candidate_frames(video_path, duration_s=duration_s)
 
     if not candidates:
         logger.warning("ingest — no frame in the video was clear enough to search with")
@@ -487,6 +489,7 @@ def ingest_video_frames(video_path: str) -> VideoIngestResult:
             image_paths=[],
             frames=[],
             keyframes=[],
+            duration=duration_s,
         )
 
     image_paths = [c["path"] for c in candidates]
@@ -539,6 +542,7 @@ def ingest_video_frames(video_path: str) -> VideoIngestResult:
         image_paths=image_paths,
         frames=frames,
         keyframes=keyframes_from_paths(image_paths),
+        duration=duration_s,
     )
 
 
@@ -594,6 +598,7 @@ def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
         image_paths=image_paths,
         frames=frames,
         keyframes=ingested.get("keyframes") or keyframes_from_paths(image_paths),
+        duration=ingested.get("duration"),
     )
 
 

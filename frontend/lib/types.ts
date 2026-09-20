@@ -29,8 +29,10 @@ export type Garment = {
   confidence: number;
   bbox: [number, number, number, number];
   chip_key: string;
+  alt_chip_key?: string;
   accessibility_line: string;
   source_frame_index?: number | null;
+  crop_fallback?: boolean;
 };
 
 export type ProductCandidate = {

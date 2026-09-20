@@ -44,7 +44,13 @@ load_dotenv(override=True)
 
 # Import perception services
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
-from services.cropper import crop_garments, managed_media_path, prepare_image_for_see  # noqa: E402
+from services.cropper import (  # noqa: E402
+    crop_garments,
+    crop_video_garments,
+    first_chip_path,
+    managed_media_path,
+    prepare_image_for_see,
+)
 from services.see_chip import detail_garments  # noqa: E402
 from services.browserbase_scraper import browse_products  # noqa: E402
 from services.product_ranker import fallback_rank_candidates, rank_candidates  # noqa: E402
@@ -218,6 +224,7 @@ class IngestResponse(BaseModel):
     frames: list[IngestFrame] = []
     keyframes: list[str] = []
     work_dir: Optional[str] = None
+    duration: Optional[float] = None
 
 
 class IdentifyVideoResponse(BaseModel):
@@ -226,6 +233,7 @@ class IdentifyVideoResponse(BaseModel):
     frame_count: int
     image_path: Optional[str] = None
     keyframes: list[str] = []
+    duration: Optional[float] = None
 
 
 class SeeChipRequest(BaseModel):
@@ -276,11 +284,11 @@ class RankResponse(BaseModel):
 
 
 def _chip_b64(body: SourceRankRequest | RetrieveRequest | JudgeRequest | BrowseRequest) -> str | None:
-    """Prefer uploaded chip bytes; fall back to a FastAPI-local chip_key path."""
+    """Prefer uploaded chip bytes; fall back to chip_key, then video alt_chip_key."""
     if body.chip and body.chip.data:
         return body.chip.data
-    key = body.garment.get("chip_key") if isinstance(body.garment, dict) else None
-    managed = managed_media_path(key if isinstance(key, str) else None)
+    garment = body.garment if isinstance(body.garment, dict) else {}
+    managed = first_chip_path(garment)
     if managed:
         try:
             return encode_chip(managed)
@@ -344,33 +352,7 @@ def _find_image_file(target: str) -> Path | None:
 
 def _crop_video_garments(garments: list[dict], frames: list[dict]) -> list[dict]:
     """Crop each garment from the frame named by source_frame_index."""
-    if not garments or not frames:
-        return garments
-    by_index = {}
-    for frame in frames:
-        try:
-            by_index[int(frame.get("index"))] = str(frame.get("path") or "")
-        except (TypeError, ValueError):
-            continue
-    fallback = str(frames[0].get("path") or "") if frames else ""
-    for garment in garments:
-        src = garment.get("source_frame_index")
-        frame_path = by_index.get(src) if isinstance(src, int) else None
-        if not frame_path and isinstance(src, int) and 0 <= src < len(frames):
-            frame_path = str(frames[src].get("path") or "")
-        if not frame_path:
-            frame_path = fallback
-        managed = managed_media_path(frame_path)
-        if managed is None:
-            logger.debug("crop — skip garment %s, no managed source frame", garment.get("id"))
-            continue
-        try:
-            cropped = crop_garments(str(managed), [garment], str(_CHIPS_DIR))
-            if cropped:
-                garment.update(cropped[0])
-        except Exception:
-            logger.debug("crop — failed for garment %s", garment.get("id"))
-    return garments
+    return crop_video_garments(garments, frames, str(_CHIPS_DIR))
 
 
 def _see_video_frames(image_paths: list[str], frame_metadata: list[dict]) -> SeeResponse:
@@ -551,11 +533,18 @@ def tools_retrieve(body: RetrieveRequest, request: Request):
     bind_job(request.headers.get("x-job-id"))
     name = garment_name(body.garment)
     try:
-        candidates = retrieve_candidates(body.garment, _chip_b64(body))
+        chip = _chip_b64(body)
+        candidates = retrieve_candidates(body.garment, chip)
     except Exception:
         logger.warning("retrieve — %s: catalog search failed", name, exc_info=True)
         candidates = []
-    logger.info("retrieve — %s: %s candidates", name, len(candidates))
+        chip = None
+    logger.info(
+        "retrieve — %s: %s candidates (%s)",
+        name,
+        len(candidates),
+        "chip like on" if chip else "text only",
+    )
     return RetrieveResponse(candidates=candidates)
 
 
@@ -745,6 +734,7 @@ async def tools_ingest(
             image_paths=image_paths,
             frames=frames,
             keyframes=keyframes_from_paths(image_paths) or result.get("keyframes") or [],
+            duration=result.get("duration"),
         )
     except ValueError as e:
         logger.warning("ingest — bad request: %s", e)
@@ -849,6 +839,7 @@ async def api_identify_video(
         frame_count=frame_count,
         image_path=image_path,
         keyframes=result.get("keyframes", []),
+        duration=result.get("duration"),
     )
 
 

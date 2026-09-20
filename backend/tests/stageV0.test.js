@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { clearIdentifyCache } from '../src/identifyCache.js';
 import { getJob } from '../src/jobs.js';
 import { isVideoUpload, startIdentifyJob } from '../src/pipeline.js';
 
@@ -39,9 +40,11 @@ async function waitForJob(jobId, timeoutMs = 3000) {
 function withMockEnv(t) {
   const previous = process.env.IDENTIFY_MOCK;
   process.env.IDENTIFY_MOCK = 'none';
+  clearIdentifyCache();
   t.after(() => {
     if (previous === undefined) delete process.env.IDENTIFY_MOCK;
     else process.env.IDENTIFY_MOCK = previous;
+    clearIdentifyCache();
   });
 }
 

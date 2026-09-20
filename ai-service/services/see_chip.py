@@ -17,7 +17,7 @@ from openai import OpenAI
 
 from logging_config import agent_log, garment_name
 from services.baseten_vlm import encode_image_data_uri
-from services.cropper import managed_media_path
+from services.cropper import first_chip_path
 from services.query_normalize import canonicalize_query, unique_queries
 
 logger = logging.getLogger("fit_stealer.see_chip")
@@ -304,7 +304,7 @@ def merge_chip_into_garment(
 
 
 def _chip_path(garment: dict[str, Any]) -> Path | None:
-    return managed_media_path(garment.get("chip_key") if isinstance(garment.get("chip_key"), str) else None)
+    return first_chip_path(garment)
 
 
 def _detail_one(
