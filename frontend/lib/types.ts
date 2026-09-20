@@ -24,6 +24,7 @@ export type Garment = {
   bbox: [number, number, number, number];
   chip_key: string;
   accessibility_line: string;
+  source_frame_index?: number | null;
 };
 
 export type ProductCandidate = {
@@ -46,8 +47,8 @@ export type Match = ProductCandidate & {
 export type IdentifyStatus = 'queued' | 'ingesting' | 'seeing' | 'sourcing' | 'ranking' | 'done' | 'error';
 
 export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string> = {
-  queued: 'Queuing your screenshot…',
-  ingesting: 'Preparing the image…',
+  queued: 'Queuing your request…',
+  ingesting: 'Preparing media…',
   seeing: 'Looking at the outfit…',
   sourcing: 'Searching shops…',
   ranking: 'Picking the best matches…',

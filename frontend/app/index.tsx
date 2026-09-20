@@ -4,7 +4,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { startIdentifyJob, getIdentifyJob } from '../lib/api';
+import { startIdentifyJob, getIdentifyJob, isVideoUri } from '../lib/api';
 import { setJobPreview } from '../lib/resultStore';
 import { CaptureButton } from '../components/CaptureButton';
 import { ScanningCircle } from '../components/ScanningCircle';
@@ -60,7 +60,7 @@ export default function HomeScreen() {
       let latest = job;
       while (latest.status !== 'done' && latest.status !== 'error') {
         if (Date.now() - started > POLL_DEADLINE_MS) {
-          throw new Error('This photo took too long to identify. Try another screenshot.');
+          throw new Error('This media took too long to identify. Try another clip or screenshot.');
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         latest = await getIdentifyJob(job.job_id);
@@ -73,7 +73,7 @@ export default function HomeScreen() {
       });
       setPhase('revealing');
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Could not process that screenshot.';
+      const message = error instanceof Error ? error.message : 'Could not process that upload.';
       Alert.alert('Identify Failed', message);
       setPhase('idle');
       setIdleVisible(true);
@@ -93,10 +93,14 @@ export default function HomeScreen() {
   const pickFromLibrary = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permission needed', 'Allow photo library access to upload a screenshot.');
+      Alert.alert('Permission needed', 'Allow photo library access to upload a screenshot or video.');
       return;
     }
-    const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.9 });
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images', 'videos'],
+      videoMaxDuration: 15,
+      quality: 0.9,
+    });
     if (!result.canceled && result.assets[0]) {
       runIdentify(result.assets[0]);
     }
@@ -113,6 +117,38 @@ export default function HomeScreen() {
       runIdentify(result.assets[0]);
     }
   };
+
+  const pickVideo = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Allow photo library access to upload a video clip.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['videos'],
+      videoMaxDuration: 15,
+    });
+    if (!result.canceled && result.assets[0]) {
+      runIdentify(result.assets[0]);
+    }
+  };
+
+  const recordVideo = async () => {
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission needed', 'Allow camera access to record a video clip.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['videos'],
+      videoMaxDuration: 15,
+    });
+    if (!result.canceled && result.assets[0]) {
+      runIdentify(result.assets[0]);
+    }
+  };
+
+  const isVideo = isVideoUri(uri);
 
   return (
     <View style={styles.container}>
@@ -131,7 +167,19 @@ export default function HomeScreen() {
           <CaptureButton disabled={phase !== 'idle'} onPress={pickFromLibrary} onLongPress={takePhoto} />
         </View>
         <Text style={styles.caption}>Tap to find this fit</Text>
-        <Text style={styles.subCaption}>Hold to use the camera</Text>
+        <Text style={styles.subCaption}>Hold to use camera</Text>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Upload or record video"
+          disabled={phase !== 'idle'}
+          onPress={pickVideo}
+          onLongPress={recordVideo}
+          style={({ pressed }) => [styles.videoButton, pressed && styles.videoButtonPressed]}
+        >
+          <Ionicons name="videocam-outline" size={17} color="#A78BFA" />
+          <Text style={styles.videoButtonText}>Video Clip (up to 15s)</Text>
+        </Pressable>
       </Animated.View>
 
       <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity, pointerEvents: 'none' }]}>
@@ -146,8 +194,10 @@ export default function HomeScreen() {
             />
           </View>
         )}
-        <Text style={styles.scanTitle}>Identifying your fit</Text>
-        <Text style={styles.scanSubtitle}>Matching the pieces to real listings</Text>
+        <Text style={styles.scanTitle}>{isVideo ? 'Analyzing video frames' : 'Identifying your fit'}</Text>
+        <Text style={styles.scanSubtitle}>
+          {isVideo ? 'Selecting clearest frames & matching items' : 'Matching the pieces to real listings'}
+        </Text>
       </Animated.View>
 
       <RippleTransition
@@ -229,5 +279,28 @@ const styles = StyleSheet.create({
   scanSubtitle: {
     fontSize: 13,
     color: '#5C5C6B',
+  },
+  videoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: 'rgba(30, 27, 46, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(167, 139, 250, 0.25)',
+  },
+  videoButtonPressed: {
+    backgroundColor: 'rgba(46, 40, 72, 0.9)',
+    borderColor: 'rgba(167, 139, 250, 0.45)',
+    transform: [{ scale: 0.97 }],
+  },
+  videoButtonText: {
+    color: '#DDD6FE',
+    fontSize: 13,
+    fontWeight: '600',
+    letterSpacing: 0.2,
   },
 });

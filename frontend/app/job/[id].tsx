@@ -6,7 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { FitCard } from '../../components/FitCard';
 import { IdentifyStatusView } from '../../components/IdentifyStatus';
-import { getIdentifyJob } from '../../lib/api';
+import { getIdentifyJob, isVideoUri } from '../../lib/api';
 import { getJobPreview } from '../../lib/resultStore';
 import { Sentry, withIdentifySpan } from '../../lib/sentry';
 import { IdentifyResult } from '../../lib/types';
@@ -103,7 +103,7 @@ export default function JobScreen() {
               return job;
             }
             if (Date.now() - started > POLL_DEADLINE_MS) {
-              throw new Error('This photo took too long to identify. Try another screenshot.');
+              throw new Error('This media took too long to identify. Try another clip or screenshot.');
             }
             await new Promise((resolve) => setTimeout(resolve, POLL_MS));
           }
@@ -130,9 +130,10 @@ export default function JobScreen() {
     }
   }, [result]);
 
-  const thumbnail = result?.thumbnail_url || preview;
+  const isVideo = isVideoUri(preview);
+  const thumbnail = result?.thumbnail_url || (isVideo ? null : preview);
   const failed = Boolean(error) || result?.status === 'error';
-  const failMessage = error || result?.error || 'Something went wrong identifying this photo. Try another screenshot.';
+  const failMessage = error || result?.error || 'Something went wrong identifying this fit. Try another screenshot or clip.';
   const loading = !failed && (!result || (result.status !== 'done' && result.status !== 'error'));
   const empty = result?.status === 'done' && result.items.length === 0;
   const done = result?.status === 'done';
@@ -151,6 +152,11 @@ export default function JobScreen() {
         <View style={styles.heroWrap}>
           {thumbnail ? (
             <Image source={{ uri: thumbnail }} style={styles.thumbnail} resizeMode="cover" />
+          ) : isVideo ? (
+            <LinearGradient colors={['#1E1B2E', '#0A0A10']} style={[styles.thumbnail, styles.videoHeroCenter]}>
+              <Ionicons name="videocam" size={44} color="#C4B5FD" />
+              <Text style={styles.videoHeroBadge}>VIDEO CLIP</Text>
+            </LinearGradient>
           ) : null}
           <LinearGradient colors={['rgba(0,0,0,0.55)', 'transparent']} style={styles.heroTopScrim} />
           <LinearGradient colors={['transparent', 'rgba(5,5,9,0.75)', '#050509']} style={styles.heroBottomScrim} />
@@ -226,6 +232,17 @@ const styles = StyleSheet.create({
   thumbnail: {
     width: '100%',
     height: '100%',
+  },
+  videoHeroCenter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  videoHeroBadge: {
+    marginTop: 10,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 1.5,
+    color: '#C4B5FD',
   },
   heroTopScrim: {
     position: 'absolute',

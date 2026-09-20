@@ -4,6 +4,7 @@ import { agentLog, jobMsg, logger } from './logger.js';
 
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 45_000);
+const VIDEO_TIMEOUT_MS = Number(process.env.VIDEO_TIMEOUT_MS || 90_000);
 const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || 15_000);
 
 let cachedSourceMode;
@@ -16,6 +17,14 @@ function toBlob(file) {
 export function imageFormData(file) {
   const form = new FormData();
   form.append('image', toBlob(file), file.originalname || 'screenshot.jpg');
+  return form;
+}
+
+export function videoFormData(file) {
+  const form = new FormData();
+  const type = file.mimetype || 'video/mp4';
+  const blob = new Blob([new Uint8Array(file.buffer)], { type });
+  form.append('video', blob, file.originalname || 'clip.mp4');
   return form;
 }
 
@@ -56,6 +65,33 @@ export async function seeAndCrop(file, jobId) {
     outfit_summary: data.outfit_summary || '',
     image_path: data.image_path,
   };
+}
+
+export async function seeVideoAndCrop(file, jobId) {
+  const url = `${AI_SERVICE_URL()}/api/identify-video`;
+  const response = await fetch(url, {
+    method: 'POST',
+    body: videoFormData(file),
+    headers: jobHeaders(jobId),
+    signal: AbortSignal.timeout(VIDEO_TIMEOUT_MS),
+  });
+  const data = await parseJson(response);
+  if (!response.ok) {
+    const err = new Error(fastapiDetail(data) || `Video perception failed (${response.status}).`);
+    err.status = response.status;
+    throw err;
+  }
+  return {
+    garments: Array.isArray(data.garments) ? data.garments : [],
+    outfit_summary: data.outfit_summary || '',
+    image_path: data.image_path,
+    frame_count: data.frame_count || 0,
+  };
+}
+
+export async function perceiveVideo(file, jobId) {
+  logger.info(jobMsg(jobId, 'see — analyzing video frames with AI (Baseten VLM + crop)'));
+  return await seeVideoAndCrop(file, jobId);
 }
 
 export async function seeOnly(file, jobId) {

@@ -40,6 +40,14 @@ load_dotenv()
 from services.baseten_vlm import analyze_frames_with_vlm  # noqa: E402
 from services.cropper import crop_garments, prepare_image_for_see  # noqa: E402
 from services.source_and_rank import source_and_rank  # noqa: E402
+from services.video_processor import (  # noqa: E402
+    cleanup_work_dir,
+    extract_candidate_frames,
+    select_and_identify_from_video,
+    validate_video,
+    ALLOWED_VIDEO_EXTENSIONS,
+    MAX_VIDEO_SIZE_BYTES,
+)
 
 # Shared DSN with Expo and Express (root .env SENTRY_DSN)
 _sentry_dsn = os.getenv("SENTRY_DSN") or ""
@@ -157,6 +165,20 @@ class SourceRankResponse(BaseModel):
     matches: list[dict]
 
 
+class IngestResponse(BaseModel):
+    garments: list[dict]
+    outfit_summary: str
+    frame_count: int
+    selected_frames: int
+
+
+class IdentifyVideoResponse(BaseModel):
+    garments: list[dict]
+    outfit_summary: str
+    frame_count: int
+    image_path: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
@@ -167,13 +189,15 @@ def health_check():
     return {
         "status": "ok",
         "service": "Fit Stealer AI Service",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "sentry": "ok" if _sentry_dsn else "unconfigured",
         "endpoints": [
             "/tools/see",
             "/tools/crop",
+            "/tools/ingest",
             "/tools/source-rank",
             "/api/identify",
+            "/api/identify-video",
         ],
     }
 
@@ -373,6 +397,175 @@ async def api_identify(
     return IdentifyResponse(
         garments=garments,
         outfit_summary=outfit_summary,
+        image_path=image_path,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /tools/ingest
+# Stage 3: Accept a video upload, extract keyframes, run VLM.
+# Architecture §7.2: POST /tools/ingest — video_processor.py (frames from video)
+# ---------------------------------------------------------------------------
+
+@app.post("/tools/ingest", response_model=IngestResponse)
+async def tools_ingest(
+    video: UploadFile = File(...),
+):
+    """
+    Ingest step (Stage 3) — extract keyframes from video, run VLM.
+
+    Accepts:
+      multipart/form-data with field `video` (.mp4, .mov, .webm)
+
+    Returns:
+      { garments: Garment[], outfit_summary: str, frame_count: int, selected_frames: int }
+    """
+    suffix = Path(video.filename or "upload.mp4").suffix.lower() or ".mp4"
+    if suffix not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video format '{suffix}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}",
+        )
+
+    file_id = str(uuid.uuid4())
+    if not job_id_var.get():
+        bind_job(file_id)
+
+    video_path = _UPLOAD_DIR / f"{file_id}{suffix}"
+    content = await video.read()
+
+    if len(content) > MAX_VIDEO_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video too large ({len(content) / 1024 / 1024:.1f} MB). Maximum: {MAX_VIDEO_SIZE_BYTES / 1024 / 1024:.0f} MB.",
+        )
+
+    video_path.write_bytes(content)
+    logger.info("ingest — saved uploaded video (%s, %.1f MB)", suffix, len(content) / 1024 / 1024)
+
+    try:
+        result = select_and_identify_from_video(str(video_path))
+    except ValueError as e:
+        logger.warning("ingest — bad request: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        logger.error("ingest — runtime error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.exception("ingest — failed")
+        raise HTTPException(status_code=502, detail=f"Video processing error: {e}")
+    finally:
+        # Clean up uploaded video
+        try:
+            video_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # Clean up working directory
+    work_dir = result.get("candidate_dir", "")
+    if work_dir:
+        cleanup_work_dir(work_dir)
+
+    return IngestResponse(
+        garments=result.get("garments", []),
+        outfit_summary=result.get("outfit_summary", ""),
+        frame_count=result.get("frame_count", 0),
+        selected_frames=result.get("selected_frames", 0),
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/identify-video
+# Stage 3 convenience: ingest + crop in one call.
+# Mirrors /api/identify but for video input.
+# ---------------------------------------------------------------------------
+
+@app.post("/api/identify-video", response_model=IdentifyVideoResponse)
+async def api_identify_video(
+    video: UploadFile = File(...),
+):
+    """
+    Stage 3 convenience — video ingest + crop in one call.
+
+    Accepts:
+      multipart/form-data with field `video`
+
+    Returns:
+      { garments: Garment[] (with chip_key), outfit_summary: str, frame_count: int }
+    """
+    suffix = Path(video.filename or "upload.mp4").suffix.lower() or ".mp4"
+    if suffix not in ALLOWED_VIDEO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video format '{suffix}'. Allowed: {', '.join(sorted(ALLOWED_VIDEO_EXTENSIONS))}",
+        )
+
+    file_id = str(uuid.uuid4())
+    if not job_id_var.get():
+        bind_job(file_id)
+
+    video_path = _UPLOAD_DIR / f"{file_id}{suffix}"
+    content = await video.read()
+
+    if len(content) > MAX_VIDEO_SIZE_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Video too large ({len(content) / 1024 / 1024:.1f} MB). Maximum: {MAX_VIDEO_SIZE_BYTES / 1024 / 1024:.0f} MB.",
+        )
+
+    video_path.write_bytes(content)
+
+    work_dir = ""
+    try:
+        result = select_and_identify_from_video(str(video_path))
+        work_dir = result.get("candidate_dir", "")
+        garments = result.get("garments", [])
+        outfit_summary = result.get("outfit_summary", "")
+        frame_count = result.get("frame_count", 0)
+
+        # Crop chips from the best source frame for each garment
+        representative_frame = None
+        if work_dir:
+            candidate_dir = os.path.join(work_dir, "candidates")
+            candidate_files = sorted(Path(candidate_dir).glob("candidate_*.jpg"))
+            if candidate_files:
+                representative_frame = candidate_files[0]
+            for g in garments:
+                src_idx = g.get("source_frame_index")
+                if src_idx is not None and 0 <= src_idx < len(candidate_files):
+                    frame_path = str(candidate_files[src_idx])
+                    if representative_frame is None or representative_frame == candidate_files[0]:
+                        representative_frame = candidate_files[src_idx]
+                    try:
+                        cropped = crop_garments(frame_path, [g], str(_CHIPS_DIR))
+                        if cropped:
+                            g.update(cropped[0])
+                    except Exception:
+                        logger.debug("crop — failed for garment %s", g.get("id"))
+
+        image_path = None
+        if representative_frame and representative_frame.exists():
+            thumb_dest = _CHIPS_DIR / f"thumb_{file_id}.jpg"
+            thumb_dest.write_bytes(representative_frame.read_bytes())
+            image_path = str(thumb_dest)
+    except ValueError as e:
+        logger.warning("identify-video — bad request: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("identify-video — failed")
+        raise HTTPException(status_code=502, detail=f"Video identify error: {e}")
+    finally:
+        try:
+            video_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if work_dir:
+            cleanup_work_dir(work_dir)
+
+    return IdentifyVideoResponse(
+        garments=garments,
+        outfit_summary=outfit_summary,
+        frame_count=frame_count,
         image_path=image_path,
     )
 
