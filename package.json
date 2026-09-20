@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "concurrently -k -n frontend,backend,ai -c cyan,magenta,green \"npm run dev --prefix frontend\" \"npm run dev --prefix backend\" \"npm run dev --prefix ai-service\"",
+    "dev": "adb reverse tcp:4000 tcp:4000 || true && concurrently -k -n frontend,backend,ai -c cyan,magenta,green \"npm run dev --prefix frontend\" \"npm run dev --prefix backend\" \"npm run dev --prefix ai-service\"",
     "install:all": "npm ci --legacy-peer-deps --prefix frontend && npm ci --include=optional --prefix backend"
   },
   "devDependencies": {
