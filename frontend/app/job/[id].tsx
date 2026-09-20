@@ -40,7 +40,7 @@ import {
 const POLL_MS = 400;
 const POLL_DEADLINE_MS = 90_000;
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
-const HERO_HEIGHT = Math.round(SCREEN_H * 0.36);
+const HERO_HEIGHT = Math.round(SCREEN_H * 0.54);
 const CARD_WIDTH = Math.min(SCREEN_W * 0.76, 340);
 const CARD_HEIGHT = CARD_WIDTH * 1.32;
 const CARD_GAP = 16;
@@ -203,84 +203,86 @@ export default function JobScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={styles.heroWrap}>
-        {thumbnail ? (
-          <Image source={{ uri: thumbnail }} style={styles.thumbnail} resizeMode="cover" />
-        ) : isVideo ? (
-          <View style={[styles.thumbnail, styles.videoHeroCenter]}>
-            <Ionicons name="videocam" size={44} color={ACCENT} />
-            <Text style={styles.videoHeroBadge}>VIDEO CLIP</Text>
+      <ScrollView
+        style={styles.pageScroll}
+        contentContainerStyle={styles.pageContent}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={styles.heroWrap}>
+          {thumbnail ? (
+            <Image source={{ uri: thumbnail }} style={styles.thumbnail} resizeMode="cover" />
+          ) : isVideo ? (
+            <View style={[styles.thumbnail, styles.videoHeroCenter]}>
+              <Ionicons name="videocam" size={44} color={ACCENT} />
+              <Text style={styles.videoHeroBadge}>VIDEO CLIP</Text>
+            </View>
+          ) : (
+            <View style={styles.thumbnail} />
+          )}
+          <LinearGradient colors={['rgba(43,32,24,0.28)', 'transparent']} style={styles.heroTopScrim} />
+          <LinearGradient colors={['transparent', 'rgba(247,240,228,0.9)', BACKGROUND]} style={styles.heroBottomScrim} />
+          <View style={styles.heroText}>
+            <Text style={styles.eyebrow}>{loading ? 'SCANNING' : failed ? 'ERROR' : 'IDENTIFIED'}</Text>
+            <Text style={styles.headline}>{headline}</Text>
           </View>
-        ) : (
-          <View style={styles.thumbnail} />
-        )}
-        <LinearGradient colors={['rgba(43,32,24,0.28)', 'transparent']} style={styles.heroTopScrim} />
-        <LinearGradient colors={['transparent', 'rgba(247,240,228,0.9)', BACKGROUND]} style={styles.heroBottomScrim} />
-        <View style={styles.heroText}>
-          <Text style={styles.eyebrow}>{loading ? 'SCANNING' : failed ? 'ERROR' : 'IDENTIFIED'}</Text>
-          <Text style={styles.headline}>{headline}</Text>
         </View>
-      </View>
+
+        {loading && (
+          <View style={styles.loadingWrap}>
+            <IdentifyStatusView status={result?.status || 'queued'} />
+          </View>
+        )}
+
+        {failed && (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyTitle}>{failMessage}</Text>
+            <Text style={styles.emptySubtitle}>Try another screenshot with the outfit clearly visible.</Text>
+          </View>
+        )}
+
+        {empty && (
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyTitle}>We couldn’t see a clear outfit in this photo.</Text>
+            <Text style={styles.emptySubtitle}>Try another screenshot with the outfit clearly visible.</Text>
+          </View>
+        )}
+
+        {done && sections.length > 0 && (
+          <View style={styles.sectionsContent}>
+            {sections.map((section) => (
+              <View key={section.category} style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>{section.title}</Text>
+                  <Text style={styles.sectionCount}>
+                    {section.cards.length} {section.cards.length === 1 ? 'listing' : 'listings'}
+                  </Text>
+                </View>
+                <FlatList
+                  data={section.cards}
+                  keyExtractor={(card) => card.key}
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  snapToInterval={CARD_WIDTH + CARD_GAP}
+                  decelerationRate="fast"
+                  contentContainerStyle={styles.sectionList}
+                  ItemSeparatorComponent={() => <View style={{ width: CARD_GAP }} />}
+                  renderItem={({ item }) =>
+                    item.match ? (
+                      <FitCard match={item.match} width={CARD_WIDTH} height={CARD_HEIGHT} />
+                    ) : (
+                      <EmptyMatchCard label={item.label} />
+                    )
+                  }
+                />
+              </View>
+            ))}
+          </View>
+        )}
+      </ScrollView>
 
       <Pressable style={styles.backButton} onPress={() => router.replace('/')}>
         <Ionicons name="chevron-back" size={22} color={TEXT_PRIMARY} />
       </Pressable>
-
-      {loading && (
-        <View style={styles.loadingWrap}>
-          <IdentifyStatusView status={result?.status || 'queued'} />
-        </View>
-      )}
-
-      {failed && (
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyTitle}>{failMessage}</Text>
-          <Text style={styles.emptySubtitle}>Try another screenshot with the outfit clearly visible.</Text>
-        </View>
-      )}
-
-      {empty && (
-        <View style={styles.emptyState}>
-          <Text style={styles.emptyTitle}>We couldn’t see a clear outfit in this photo.</Text>
-          <Text style={styles.emptySubtitle}>Try another screenshot with the outfit clearly visible.</Text>
-        </View>
-      )}
-
-      {done && sections.length > 0 && (
-        <ScrollView
-          style={styles.sectionsScroll}
-          contentContainerStyle={styles.sectionsContent}
-          showsVerticalScrollIndicator={false}
-        >
-          {sections.map((section) => (
-            <View key={section.category} style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>{section.title}</Text>
-                <Text style={styles.sectionCount}>
-                  {section.cards.length} {section.cards.length === 1 ? 'listing' : 'listings'}
-                </Text>
-              </View>
-              <FlatList
-                data={section.cards}
-                keyExtractor={(card) => card.key}
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                snapToInterval={CARD_WIDTH + CARD_GAP}
-                decelerationRate="fast"
-                contentContainerStyle={styles.sectionList}
-                ItemSeparatorComponent={() => <View style={{ width: CARD_GAP }} />}
-                renderItem={({ item }) =>
-                  item.match ? (
-                    <FitCard match={item.match} width={CARD_WIDTH} height={CARD_HEIGHT} />
-                  ) : (
-                    <EmptyMatchCard label={item.label} />
-                  )
-                }
-              />
-            </View>
-          ))}
-        </ScrollView>
-      )}
 
       <RevealOverlay />
     </View>
@@ -359,15 +361,14 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   loadingWrap: {
-    flex: 1,
-    justifyContent: 'center',
+    paddingTop: 32,
   },
   emptyState: {
-    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
     paddingHorizontal: 32,
+    paddingTop: 48,
   },
   emptyTitle: {
     fontFamily: FONT_SEMIBOLD,
@@ -381,11 +382,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: 'center',
   },
-  sectionsScroll: {
+  pageScroll: {
     flex: 1,
   },
-  sectionsContent: {
+  pageContent: {
+    flexGrow: 1,
     paddingBottom: 40,
+  },
+  sectionsContent: {
+    paddingTop: 4,
   },
   section: {
     marginTop: 24,
