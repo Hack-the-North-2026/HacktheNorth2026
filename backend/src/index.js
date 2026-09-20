@@ -14,7 +14,7 @@ dotenv.config({ override: true });
 
 const { Sentry, sentryEnabled } = await import('./sentry.js');
 const { connectMongo, mongoStatus } = await import('./db.js');
-const { getJob } = await import('./jobs.js');
+const { canReadJob, getJob, getJobFrame, toPublicJob } = await import('./jobs.js');
 const { isImageUpload, isVideoUpload, startIdentifyJob } = await import('./pipeline.js');
 const { listRecentSearches, sanitizeDeviceId } = await import('./recentSearches.js');
 
@@ -127,15 +127,33 @@ app.get('/dev/upload', (_req, res) => {
   res.sendFile(path.join(__dirname, '../public/dev-upload.html'));
 });
 
+function requestDeviceId(req) {
+  return sanitizeDeviceId(req.get('x-device-id') || req.query.device_id);
+}
+
+app.get('/jobs/:id/frames/:index', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const job = await getJob(req.params.id);
+  if (!canReadJob(job, requestDeviceId(req))) {
+    return res.status(404).json({ error: 'Job not found.' });
+  }
+  const frame = getJobFrame(req.params.id, req.params.index);
+  if (!frame) {
+    return res.status(404).json({ error: 'Frame not found.' });
+  }
+  res.setHeader('Content-Type', 'image/jpeg');
+  return res.send(frame);
+});
+
 app.get('/jobs/:id', async (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
   res.setHeader('Pragma', 'no-cache');
   res.setHeader('Expires', '0');
   const job = await getJob(req.params.id);
-  if (!job) {
+  if (!canReadJob(job, requestDeviceId(req))) {
     return res.status(404).json({ error: 'Job not found.' });
   }
-  return res.json(job);
+  return res.json(toPublicJob(job));
 });
 
 app.get('/recent-searches', async (req, res) => {
@@ -183,7 +201,7 @@ function handleIdentify(req, res) {
 
   const deviceId = req.body?.device_id;
   const job = startIdentifyJob({ origin, file: req.file, deviceId, type });
-  return res.json(job);
+  return res.json(toPublicJob(job));
 }
 
 const uploadFields = upload.fields([

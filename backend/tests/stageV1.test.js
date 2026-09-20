@@ -85,7 +85,7 @@ test('video jobs move ingesting → seeing → detailing and publish keyframes a
       },
       seeVideoFrames: async (ingested) => {
         calls.push('seeVideoFrames');
-        assert.equal(ingested.keyframes[0], 'data:image/jpeg;base64,INGEST');
+        assert.equal(ingested.keyframes[0], `/jobs/${job.job_id}/frames/0`);
         return {
           garments: [VIDEO_GARMENT],
           outfit_summary: 'black leather jacket',
@@ -113,7 +113,7 @@ test('video jobs move ingesting → seeing → detailing and publish keyframes a
   const statuses = (done.steps || []).map((item) => item.status);
   assert.ok(statuses.indexOf('ingesting') < statuses.indexOf('seeing'), `${statuses.join(' → ')}`);
   assert.ok(statuses.indexOf('seeing') < statuses.indexOf('detailing'), `${statuses.join(' → ')}`);
-  assert.equal(done.keyframes[0], 'data:image/jpeg;base64,INGEST');
+  assert.equal(done.keyframes[0], `/jobs/${job.job_id}/frames/0`);
   const ingestStep = (done.steps || []).find((item) => item.status === 'ingesting');
   const seeStep = (done.steps || []).find((item) => item.status === 'seeing');
   assert.equal(ingestStep.note, 'pulling clear frames');

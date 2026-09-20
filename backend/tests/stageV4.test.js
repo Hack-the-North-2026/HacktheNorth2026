@@ -119,6 +119,45 @@ test('video garment with chip gets exact from visual, not title rhyme, and does 
   assert.ok(!String(ranked[0].matches[0].reason).includes('title'));
 });
 
+test('weak visual browse re-judges with the same alt chip', async () => {
+  const dir = chipDir();
+  const primary = path.join(dir, 'v4-browse-primary.jpg');
+  const alt = path.join(dir, 'v4-browse-alt.jpg');
+  writeFileSync(primary, Buffer.from([0xff, 0xd8, 0xff, 0xd9]));
+  writeFileSync(alt, Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0xd9]));
+  const judged = [];
+  const browsed = [];
+  await matchOutfit(
+    [
+      {
+        id: 'jacket-00-04-02-16-14',
+        category: 'jacket',
+        search_query: 'black leather jacket',
+        queries: ['black leather jacket'],
+        chip_key: primary,
+        alt_chip_key: alt,
+        source_frame_index: 0,
+      },
+    ],
+    'job-v4-browse-alt',
+    {
+      resolveMode: async () => 'match-loop',
+      retrieve: async () => [],
+      judge: async (garment) => {
+        judged.push(garment.chip_key);
+        return { visual_scores: [], best: null };
+      },
+      browse: async (garment) => {
+        browsed.push(garment.chip_key);
+        return [{ title: 'Side view jacket', url: 'https://shop.example/side', image_url: 'https://cdn.example/s.jpg', source: 'browserbase' }];
+      },
+      rank: async () => [],
+    },
+  );
+  assert.equal(browsed[0], alt);
+  assert.equal(judged.at(-1), alt);
+});
+
 test('video pipeline hands the cropped chip to matchOutfit', async (t) => {
   const previous = process.env.IDENTIFY_MOCK;
   process.env.IDENTIFY_MOCK = 'none';

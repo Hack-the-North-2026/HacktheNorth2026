@@ -66,18 +66,7 @@ export type IdentifyStatus =
   | 'done'
   | 'error';
 
-export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string> = {
-  queued: 'Queuing your request…',
-  ingesting: 'Preparing media…',
-  seeing: 'Looking at the outfit…',
-  detailing: 'Reading each garment up close…',
-  sourcing: 'Searching shops…',
-  judging: 'Comparing product photos to the crop…',
-  retrying: 'Searching the open web…',
-  ranking: 'Picking the best matches…',
-  done: 'Found your fit',
-  error: 'Something went wrong',
-};
+export { IDENTIFY_STATUS_COPY } from './identifyCopy';
 
 export type IdentifyResult = {
   job_id: string;
@@ -86,6 +75,7 @@ export type IdentifyResult = {
   media_type?: 'image' | 'video';
   thumbnail_url?: string;
   keyframes?: string[];
+  empty_reason?: 'ingest' | 'see';
   outfit_summary?: string;
   items: Array<{
     garment: Garment;

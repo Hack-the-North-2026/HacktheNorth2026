@@ -208,17 +208,31 @@ export async function startIdentifyJob(
   throw lastError || new Error('Could not upload image to backend');
 }
 
+export function resolveMediaUrl(uri?: string | null): string {
+  if (!uri) return '';
+  if (uri.startsWith('data:') || uri.startsWith('blob:') || /^https?:\/\//i.test(uri)) return uri;
+  if (uri.startsWith('/')) return `${getApiBaseUrl()}${uri}`;
+  return uri;
+}
+
 export async function getIdentifyJob(jobId: string): Promise<IdentifyResult> {
+  const deviceId = await getDeviceId();
   const path = `/jobs/${encodeURIComponent(jobId)}?_t=${Date.now()}`;
   const response = await fetchWithCandidateFallback(path, {
     headers: { 
       Accept: 'application/json',
+      'x-device-id': deviceId,
       'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
       'Pragma': 'no-cache',
       'Expires': '0'
     },
   }, 5000);
-  return readJson<IdentifyResult>(response);
+  const job = await readJson<IdentifyResult>(response);
+  return {
+    ...job,
+    keyframes: (job.keyframes || []).map((uri) => resolveMediaUrl(uri)),
+    thumbnail_url: job.thumbnail_url ? resolveMediaUrl(job.thumbnail_url) : job.thumbnail_url,
+  };
 }
 
 export async function checkBackendHealth() {

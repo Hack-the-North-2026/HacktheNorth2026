@@ -30,6 +30,17 @@ class MetricsTests(unittest.TestCase):
             "https://shop.example/J",
         )
 
+    def test_fail_stage_ingest_and_see_for_video(self):
+        self.assertEqual(
+            diagnose_fail_stage({"items": [], "empty_reason": "ingest", "media_type": "video"}),
+            "ingest",
+        )
+        self.assertEqual(
+            diagnose_fail_stage({"items": [], "empty_reason": "see", "media_type": "video"}),
+            "see",
+        )
+        self.assertIsNone(diagnose_fail_stage({"items": [], "empty_reason": "see", "media_type": "image"}))
+
     def test_fail_stage_seechip_retrieve_judge_rank(self):
         self.assertIsNone(diagnose_fail_stage({"items": []}))
         self.assertEqual(
@@ -101,14 +112,21 @@ class MetricsTests(unittest.TestCase):
 
 class GoldenSetTests(unittest.TestCase):
     def test_manifest_has_ten_cases_covering_kinds(self):
-        cases = load_manifest()
+        cases = load_manifest("image")
         self.assertEqual(len(cases), 10)
         kinds = {case["kind"] for case in cases}
         self.assertTrue({"distinctive_jacket", "logo", "generic_tee", "no_clothes"} <= kinds)
         self.assertTrue(any(case.get("expect_empty") for case in cases))
 
+    def test_video_manifest_covers_clip_kinds(self):
+        cases = load_manifest("video")
+        self.assertGreaterEqual(len(cases), 5)
+        kinds = {case["kind"] for case in cases}
+        self.assertTrue({"distinctive_jacket", "logo", "generic_tee", "blur_fail"} <= kinds)
+        self.assertTrue(any(case.get("expect_empty") and case.get("empty_reason") == "ingest" for case in cases))
+
     def test_recorded_fixtures_keep_the_scorer_honest(self):
-        report = evaluate()
+        report = evaluate(media="image")
         summary = report["summary"]
         self.assertEqual(summary["cases"], 10)
         self.assertEqual(summary["stable_cases"], 10)
@@ -117,6 +135,20 @@ class GoldenSetTests(unittest.TestCase):
         empty = next(row for row in report["rows"] if row["id"] == "no-clothes")
         self.assertTrue(empty["ok"])
         jacket = next(row for row in report["rows"] if row["id"] == "distinctive-leather-jacket")
+        self.assertEqual(jacket["jaccard"], 1.0)
+        self.assertTrue(jacket["top_url_stable"])
+        self.assertGreaterEqual(jacket["exact_count"], 1)
+
+    def test_video_recorded_fixtures_are_stable_and_name_ingest(self):
+        report = evaluate(media="video")
+        summary = report["summary"]
+        self.assertEqual(summary["cases"], 7)
+        self.assertEqual(summary["stable_cases"], 7)
+        self.assertGreater(summary["exact_rate"], 0)
+        blur = next(row for row in report["rows"] if row["id"] == "dark-blur-fail")
+        self.assertTrue(blur["ok"])
+        self.assertEqual(blur["fail_stage"], "ingest")
+        jacket = next(row for row in report["rows"] if row["id"] == "turning-leather-jacket")
         self.assertEqual(jacket["jaccard"], 1.0)
         self.assertTrue(jacket["top_url_stable"])
         self.assertGreaterEqual(jacket["exact_count"], 1)

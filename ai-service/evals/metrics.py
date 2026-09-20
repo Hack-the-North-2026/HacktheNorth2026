@@ -110,6 +110,12 @@ def seechip_query_count(result: dict[str, Any]) -> int:
 
 def diagnose_fail_stage(result: dict[str, Any]) -> str | None:
     """Name the step that blocked exact when the golden set has no Found cards."""
+    empty_reason = result.get("empty_reason")
+    media_type = result.get("media_type") or result.get("media")
+    if empty_reason == "ingest":
+        return "ingest"
+    if empty_reason == "see" and media_type == "video":
+        return "see"
     items = result.get("items") or []
     if not items:
         return None

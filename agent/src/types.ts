@@ -10,7 +10,9 @@ export type IdentifyStatus =
   | "done"
   | "error";
 
-export type IdentifyOrigin = "app" | "android_overlay" | "android_qs" | "share";
+export type IdentifyOrigin = "app" | "android_overlay" | "android_qs" | "share" | "ios_share";
+
+export type IdentifyMediaType = "image" | "video";
 
 export type JobStep = {
   status: IdentifyStatus;
@@ -22,11 +24,17 @@ export type JobState = {
   job_id: string;
   status: IdentifyStatus;
   origin: IdentifyOrigin;
+  media_type?: IdentifyMediaType;
   outfit_summary?: string;
   items: Array<{ garment: Record<string, unknown>; matches: Record<string, unknown>[] }>;
   steps: JobStep[];
   error?: string;
   image_hash?: string;
+  keyframes?: string[];
+  thumbnail_url?: string;
+  empty_reason?: "ingest" | "see";
+  frame_count?: number;
+  selected_frames?: number;
 };
 
 export type RunPayload = {
@@ -36,6 +44,7 @@ export type RunPayload = {
   r2_key: string;
   filename: string;
   content_type: string;
+  media_type?: IdentifyMediaType;
   cached?: JobState;
 };
 

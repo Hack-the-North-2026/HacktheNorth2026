@@ -7,3 +7,6 @@ node_modules/
 frontend/.expo/
 **/.wrangler/
 .dev.vars
+ai-service/evals/golden/videos/*.mp4
+ai-service/evals/golden/videos/*.mov
+ai-service/evals/golden/videos/*.webm

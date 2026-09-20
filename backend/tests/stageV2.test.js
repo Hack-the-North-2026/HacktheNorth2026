@@ -137,7 +137,7 @@ test('same clip x3 hits cache on 2 and 3 and skips ffmpeg', async (t) => {
   assert.equal(firstDone.status, 'done');
   assert.deepEqual(calls, ['ingestVideo', 'seeVideoFrames', 'matchOutfit']);
   assert.equal(firstDone.items[0].matches[0].url, 'https://shop.example/jacket');
-  assert.equal(firstDone.keyframes[0], 'data:image/jpeg;base64,V2');
+  assert.equal(firstDone.keyframes[0], `/jobs/${first.job_id}/frames/0`);
 
   const cached = getCachedIdentify(sha256Buffer(CLIP_BYTES));
   assert.equal(cached.items[0].matches[0].url, 'https://shop.example/jacket');
@@ -153,7 +153,7 @@ test('same clip x3 hits cache on 2 and 3 and skips ffmpeg', async (t) => {
     const done = await waitForJob(job.job_id);
     assert.equal(done.status, 'done');
     assert.equal(done.items[0].matches[0].url, 'https://shop.example/jacket');
-    assert.equal(done.keyframes[0], 'data:image/jpeg;base64,V2');
+    assert.match(done.keyframes[0], /\/jobs\/.+\/frames\/0$/);
     assert.equal(done.items[0].garment.id, firstDone.items[0].garment.id);
   }
   assert.deepEqual(calls, ['ingestVideo', 'seeVideoFrames', 'matchOutfit']);
@@ -206,6 +206,32 @@ test('IDENTIFY_MOCK results are not cached', async (t) => {
   const done = await waitForJob(job.job_id);
   assert.equal(done.status, 'done');
   assert.equal(ingestCalls, 0);
+  assert.equal(getCachedIdentify(sha256Buffer(CLIP_BYTES)), null);
+});
+
+test('empty ingest results are not cached', async (t) => {
+  withMockEnv(t);
+  clearIdentifyCache();
+  t.after(() => clearIdentifyCache());
+
+  const job = startIdentifyJob({
+    origin: 'app',
+    file: { ...VIDEO_FILE, buffer: Buffer.from(CLIP_BYTES) },
+    type: 'video',
+    deps: {
+      ingestVideo: async () => ({
+        image_paths: [],
+        frames: [],
+        keyframes: [],
+        frame_count: 10,
+        selected_frames: 0,
+        outfit_summary: "Couldn't find a clear enough view of the outfit in this clip.",
+      }),
+    },
+  });
+  const done = await waitForJob(job.job_id);
+  assert.equal(done.status, 'done');
+  assert.equal(done.empty_reason, 'ingest');
   assert.equal(getCachedIdentify(sha256Buffer(CLIP_BYTES)), null);
 });
 

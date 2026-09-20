@@ -5,6 +5,7 @@ import { agentLog, jobMsg, logger } from './logger.js';
 const AI_SERVICE_URL = () => process.env.AI_SERVICE_URL || 'http://localhost:8000';
 const SEE_TIMEOUT_MS = Number(process.env.SEE_TIMEOUT_MS || 60_000);
 const VIDEO_TIMEOUT_MS = Number(process.env.VIDEO_TIMEOUT_MS || 90_000);
+const VIDEO_SEE_TIMEOUT_MS = Number(process.env.VIDEO_SEE_TIMEOUT_MS || 90_000);
 const INGEST_TIMEOUT_MS = Number(process.env.INGEST_TIMEOUT_MS || 30_000);
 const SEE_CHIP_TIMEOUT_MS = Number(process.env.SEE_CHIP_TIMEOUT_MS || 45_000);
 const SOURCE_TIMEOUT_MS = Number(process.env.SOURCE_TIMEOUT_MS || 70_000);
@@ -102,6 +103,7 @@ export async function seeVideoAndCrop(file, jobId) {
     image_paths: Array.isArray(data.image_paths) ? data.image_paths : [],
     frames: Array.isArray(data.frames) ? data.frames : [],
     duration: Number.isFinite(Number(data.duration)) ? Number(data.duration) : null,
+    empty_reason: data.empty_reason === 'ingest' || data.empty_reason === 'see' ? data.empty_reason : undefined,
   };
 }
 
@@ -158,7 +160,7 @@ export async function seeVideoFrames(ingested, jobId) {
     method: 'POST',
     headers: jobHeaders(jobId, { 'Content-Type': 'application/json' }),
     body: JSON.stringify({ image_paths: imagePaths, frame_metadata: frameMetadata }),
-    signal: AbortSignal.timeout(SEE_TIMEOUT_MS),
+    signal: AbortSignal.timeout(VIDEO_SEE_TIMEOUT_MS),
   });
   const data = await parseJson(response);
   if (!response.ok) {

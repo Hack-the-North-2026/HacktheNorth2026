@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 import logging
 import re
+import tempfile
 
 from PIL import Image, ImageFilter
 
@@ -29,8 +30,20 @@ MIN_CHIP_PX = 32
 MANAGED_TEMP_MARK = "fit-stealer"
 
 
+def _under_temp(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(Path(tempfile.gettempdir()).resolve())
+        return True
+    except ValueError:
+        return False
+
+
 def managed_media_path(raw: str | None) -> Path | None:
-    """Resolve a chip/upload path only if it lives under a Fit Stealer temp dir."""
+    """Resolve a chip/upload path only if it lives under a Fit Stealer temp dir.
+
+    The mark must be a path *component* (not a substring of an unrelated folder),
+    and the file must sit under the process temp directory.
+    """
     if not raw or not isinstance(raw, str) or len(raw) >= 1024:
         return None
     try:
@@ -39,7 +52,9 @@ def managed_media_path(raw: str | None) -> Path | None:
         return None
     if not path.is_file():
         return None
-    if MANAGED_TEMP_MARK not in str(path).lower():
+    if not _under_temp(path):
+        return None
+    if not any(part.lower().startswith(MANAGED_TEMP_MARK) for part in path.parts):
         return None
     return path
 

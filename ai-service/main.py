@@ -21,6 +21,7 @@ Express / Cloudflare IdentifyAgent own the job loop and call these tools.
 
 from __future__ import annotations
 
+import base64
 import os
 import logging
 import tempfile
@@ -111,13 +112,16 @@ app.add_middleware(
 )
 
 _TOOL_KEY = os.getenv("TOOL_SERVER_SECRET", "").strip()
+_REQUIRE_TOOL_KEY = os.getenv("NODE_ENV", "development").strip().lower() == "production"
 
 
 @app.middleware("http")
 async def tool_auth(request: Request, call_next):
-    if not _TOOL_KEY:
-        return await call_next(request)
     if request.method == "OPTIONS" or request.url.path in {"/", "/health"}:
+        return await call_next(request)
+    if not _TOOL_KEY:
+        if _REQUIRE_TOOL_KEY:
+            return JSONResponse({"detail": "TOOL_SERVER_SECRET is required"}, status_code=503)
         return await call_next(request)
     if request.headers.get("x-tool-key") != _TOOL_KEY:
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
@@ -156,8 +160,33 @@ _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 _CHIPS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _cleanup_stale_media(max_age_s: int | None = None) -> int:
+    age = max_age_s if max_age_s is not None else int(os.getenv("CHIP_TTL_S", "7200"))
+    now = time.time()
+    removed = 0
+    for folder in (_CHIPS_DIR, _UPLOAD_DIR):
+        if not folder.is_dir():
+            continue
+        for path in folder.glob("*"):
+            try:
+                if path.is_file() and now - path.stat().st_mtime > age:
+                    path.unlink()
+                    removed += 1
+            except OSError:
+                continue
+    if removed:
+        logger.info("cleanup — removed %s stale chip/upload files older than %ss", removed, age)
+    return removed
+
+
 @app.on_event("startup")
 def on_startup():
+    if not _TOOL_KEY:
+        if _REQUIRE_TOOL_KEY:
+            logger.error("TOOL_SERVER_SECRET is required in production")
+        else:
+            logger.warning("TOOL_SERVER_SECRET is unset — /tools/* are open on this process")
+    _cleanup_stale_media()
     logger.info(
         "AI service ready — SeeScene · SeeChip · VisualJudge · retrieve/judge/browse/rank · "
         "Shopify fan-out · Composio · Browserbase reverse-image"
@@ -183,9 +212,17 @@ class SeeResponse(BaseModel):
     image_path: str = ""
 
 
+class SeeFrameBytes(BaseModel):
+    data: str
+    index: int = 0
+    timestamp: float = 0
+    sharpness: float = 0
+
+
 class SeeFramesRequest(BaseModel):
-    image_paths: list[str]
+    image_paths: list[str] = []
     frame_metadata: list[dict] = []
+    frames: list[SeeFrameBytes] = []
 
 
 class IdentifyResponse(BaseModel):
@@ -234,6 +271,8 @@ class IdentifyVideoResponse(BaseModel):
     image_path: Optional[str] = None
     keyframes: list[str] = []
     duration: Optional[float] = None
+    empty_reason: Optional[str] = None
+    selected_frames: Optional[int] = None
 
 
 class SeeChipRequest(BaseModel):
@@ -310,6 +349,7 @@ def health_check():
         "version": "0.3.0",
         "sentry": "ok" if _sentry_dsn else "unconfigured",
         "ffmpeg": "ok" if ffmpeg_available() else "missing",
+        "tool_auth": "required" if _TOOL_KEY or _REQUIRE_TOOL_KEY else "open",
         "endpoints": [
             "/tools/see",
             "/tools/crop",
@@ -355,25 +395,55 @@ def _crop_video_garments(garments: list[dict], frames: list[dict]) -> list[dict]
     return crop_video_garments(garments, frames, str(_CHIPS_DIR))
 
 
-def _see_video_frames(image_paths: list[str], frame_metadata: list[dict]) -> SeeResponse:
+def _write_see_frame_bytes(uploaded: list[SeeFrameBytes]) -> list[dict]:
+    frames = []
+    for item in uploaded:
+        try:
+            raw = base64.b64decode(item.data, validate=False)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"invalid frame bytes: {exc}") from exc
+        if not raw:
+            continue
+        dest = _CHIPS_DIR / f"{uuid.uuid4()}_see_frame_{int(item.index):04d}.jpg"
+        dest.write_bytes(raw)
+        frames.append({
+            "path": str(dest.resolve()),
+            "timestamp": item.timestamp,
+            "sharpness": item.sharpness,
+            "index": item.index,
+        })
+    return frames
+
+
+def _see_video_frames(
+    image_paths: list[str],
+    frame_metadata: list[dict],
+    uploaded_frames: list[SeeFrameBytes] | None = None,
+) -> SeeResponse:
     frames = []
     resolved_paths = []
-    for i, raw in enumerate(image_paths):
-        managed = managed_media_path(raw)
-        if managed is None:
-            raise HTTPException(
-                status_code=400,
-                detail="image_paths must be Fit Stealer frame files on this server",
-            )
-        path = str(managed)
-        resolved_paths.append(path)
-        meta = frame_metadata[i] if i < len(frame_metadata) else {}
-        frames.append({
-            "path": path,
-            "timestamp": meta.get("timestamp", 0),
-            "sharpness": meta.get("sharpness", 0),
-            "index": meta.get("index", i),
-        })
+    if uploaded_frames:
+        frames = _write_see_frame_bytes(uploaded_frames)
+        resolved_paths = [frame["path"] for frame in frames]
+    if not resolved_paths:
+        for i, raw in enumerate(image_paths):
+            managed = managed_media_path(raw)
+            if managed is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="image_paths must be Fit Stealer frame files on this server",
+                )
+            path = str(managed)
+            resolved_paths.append(path)
+            meta = frame_metadata[i] if i < len(frame_metadata) else {}
+            frames.append({
+                "path": path,
+                "timestamp": meta.get("timestamp", 0),
+                "sharpness": meta.get("sharpness", 0),
+                "index": meta.get("index", i),
+            })
+    if not resolved_paths:
+        raise HTTPException(status_code=400, detail="image_paths or frames is required")
 
     try:
         result = analyze_frames_with_vlm(resolved_paths, frame_metadata=frames)
@@ -405,9 +475,9 @@ async def tools_see(request: Request):
     content_type = (request.headers.get("content-type") or "").lower()
     if "application/json" in content_type:
         payload = SeeFramesRequest.model_validate(await request.json())
-        if not payload.image_paths:
-            raise HTTPException(status_code=400, detail="image_paths is required")
-        return _see_video_frames(payload.image_paths, payload.frame_metadata)
+        if not payload.image_paths and not payload.frames:
+            raise HTTPException(status_code=400, detail="image_paths or frames is required")
+        return _see_video_frames(payload.image_paths, payload.frame_metadata, payload.frames)
 
     image = None
     if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
@@ -726,6 +796,7 @@ async def tools_ingest(
         frames = persist_selected_frames(result.get("frames") or [], str(_CHIPS_DIR), file_id)
         image_paths = [frame["path"] for frame in frames]
 
+        _cleanup_stale_media()
         return IngestResponse(
             garments=[],
             outfit_summary=result.get("outfit_summary", ""),
@@ -833,6 +904,12 @@ async def api_identify_video(
         if work_dir:
             cleanup_work_dir(work_dir)
 
+    empty_reason = None
+    if not frames:
+        empty_reason = "ingest"
+    elif not garments:
+        empty_reason = "see"
+
     return IdentifyVideoResponse(
         garments=garments,
         outfit_summary=outfit_summary,
@@ -840,6 +917,8 @@ async def api_identify_video(
         image_path=image_path,
         keyframes=result.get("keyframes", []),
         duration=result.get("duration"),
+        empty_reason=empty_reason,
+        selected_frames=len(frames),
     )
 
 
