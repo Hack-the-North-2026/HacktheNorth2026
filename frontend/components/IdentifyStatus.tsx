@@ -1,7 +1,7 @@
 import React from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
-import { IDENTIFY_STATUS_COPY, IdentifyStatus } from '../lib/types';
-import { ACCENT, TEXT_PRIMARY, SURFACE_MUTED, BORDER, FONT_SEMIBOLD, FS_MD } from '../lib/theme';
+import { IdentifyStatus } from '../lib/types';
+import { ACCENT, TEXT_PRIMARY, TEXT_MUTED, SURFACE_MUTED, BORDER, FONT_MEDIUM, FONT_SEMIBOLD, FS_MD, FS_SM } from '../lib/theme';
 import { identifyStatusCopy } from '../lib/identifyCopy';
 
 const STEPS: IdentifyStatus[] = [
@@ -18,18 +18,23 @@ export function IdentifyStatusView({
   status,
   mediaType = 'image',
   note,
+  logs,
 }: {
   status: IdentifyStatus;
   mediaType?: 'image' | 'video';
   note?: string;
+  logs?: Array<{ message: string }>;
 }) {
   const progressStatus = status === 'retrying' ? 'judging' : status;
   const currentIndex = Math.max(0, STEPS.indexOf(progressStatus));
+  const title = identifyStatusCopy(status, mediaType, note);
+  const latestLog = logs?.length ? logs[logs.length - 1]?.message : null;
 
   return (
     <View style={styles.wrap}>
       <ActivityIndicator color={ACCENT} size="large" />
-      <Text style={styles.title}>{IDENTIFY_STATUS_COPY[status]}</Text>
+      <Text style={styles.title}>{title}</Text>
+      {latestLog ? <Text style={styles.log}>{latestLog}</Text> : null}
       <View style={styles.steps}>
         {STEPS.map((step, index) => {
           const active = index <= currentIndex;
@@ -71,6 +76,13 @@ const styles = StyleSheet.create({
     fontSize: FS_MD,
     fontFamily: FONT_SEMIBOLD,
     textAlign: 'center',
+  },
+  log: {
+    color: TEXT_MUTED,
+    fontSize: FS_SM,
+    fontFamily: FONT_MEDIUM,
+    textAlign: 'center',
+    marginTop: -8,
   },
   steps: {
     flexDirection: 'row',

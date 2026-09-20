@@ -4,6 +4,12 @@ export const IDENTIFY_POLL_DEADLINE_MS: number;
 
 export const IDENTIFY_STATUS_COPY: Record<IdentifyStatus, string>;
 
+export const IDENTIFY_STAGE_ORDER: IdentifyStatus[];
+
+export const IDENTIFY_STAGE_PROGRESS: Record<IdentifyStatus, number>;
+
+export const IDENTIFY_STAGE_CEILING: Partial<Record<IdentifyStatus, number>>;
+
 export type IdentifyMediaType = 'image' | 'video';
 
 export type IdentifyCopy = {
@@ -16,6 +22,14 @@ export function identifyStatusCopy(
   mediaType?: IdentifyMediaType,
   note?: string,
 ): string;
+
+export function identifyStageIndex(status: IdentifyStatus): number;
+
+export function identifyProgressFloor(status: IdentifyStatus): number;
+
+export function identifyProgressCeiling(status: IdentifyStatus): number;
+
+export function formatIdentifyLog(message?: string | null): string;
 
 export function timeoutIdentifyCopy(mediaType: IdentifyMediaType): string;
 

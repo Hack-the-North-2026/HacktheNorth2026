@@ -276,5 +276,9 @@ export async function listRecentSearches(): Promise<RecentSearch[]> {
     },
   }, 5000);
   const data = await readJson<{ searches?: RecentSearch[] }>(response);
-  return Array.isArray(data.searches) ? data.searches : [];
+  if (!Array.isArray(data.searches)) return [];
+  return data.searches.map((search) => ({
+    ...search,
+    thumbnail_url: search.thumbnail_url ? resolveMediaUrl(search.thumbnail_url) : search.thumbnail_url,
+  }));
 }

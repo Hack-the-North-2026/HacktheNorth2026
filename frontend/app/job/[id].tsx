@@ -324,6 +324,7 @@ export default function JobScreen() {
             status={result?.status || 'queued'}
             mediaType={isVideo ? 'video' : 'image'}
             note={result?.steps?.[result.steps.length - 1]?.note}
+            logs={result?.logs}
           />
         </ScrollView>
       ) : failed || empty ? (

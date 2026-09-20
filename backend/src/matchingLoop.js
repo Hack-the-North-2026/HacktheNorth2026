@@ -72,7 +72,13 @@ function onceStep(fn) {
   };
 }
 
-async function matchGarment(garment, jobId, tools, notes, prepare) {
+function pieceLabel(garment) {
+  const description = String(garment?.description || '').trim();
+  if (description && description.length <= 40) return description;
+  return String(garment?.category || 'piece');
+}
+
+async function matchGarment(garment, jobId, tools, notes, prepare, log) {
   let next = garment;
   if (prepare) {
     next = (await prepare(garment)) || garment;
@@ -80,17 +86,27 @@ async function matchGarment(garment, jobId, tools, notes, prepare) {
   }
 
   const label = next?.category || next?.id || 'item';
+  const pretty = pieceLabel(next);
   let candidates = [];
   await notes.sourcing();
+  await log?.(`Searching shops for ${pretty}`, 'sourcing');
   try {
     candidates = await tools.retrieve(next, jobId);
     logger.info(jobMsg(jobId, `source — ${label}: ${candidates.length} catalog hits`));
+    await log?.(
+      candidates.length
+        ? `${pretty} — ${candidates.length} listing${candidates.length === 1 ? '' : 's'}`
+        : `No listings yet for ${pretty}`,
+      'sourcing',
+    );
   } catch (error) {
     logger.warn(jobMsg(jobId, `source — ${label}: retrieve failed`));
     logger.warn(error instanceof Error ? error.message : String(error));
+    await log?.(`Shop search missed ${pretty}`, 'sourcing');
   }
 
   await notes.judging();
+  await log?.(`Comparing photos to ${pretty}`, 'judging');
   let visualScores = [];
   let best = null;
   try {
@@ -104,6 +120,7 @@ async function matchGarment(garment, jobId, tools, notes, prepare) {
 
   if (needsReformulate(best)) {
     await notes.retrying('searching with a sharper query');
+    await log?.(`Trying a sharper search for ${pretty}`, 'retrying');
     try {
       const extra = await tools.retrieve(reformulateGarment(next), jobId);
       if (extra?.length) {
@@ -132,6 +149,7 @@ async function matchGarment(garment, jobId, tools, notes, prepare) {
 
   if (!shouldEarlyExit(best) && needsBrowse(best, candidates.length)) {
     await notes.retrying('searching the open web');
+    await log?.(`Searching the open web for ${pretty}`, 'retrying');
     try {
       const browseGarment = next?.alt_chip_key ? withAltChip(next) : next;
       const browsed = await tools.browse(browseGarment, jobId);
@@ -148,6 +166,10 @@ async function matchGarment(garment, jobId, tools, notes, prepare) {
             `browse — ${label}: merged ${browsed.length} listings, visual ${best ?? 'none'}`,
           ),
         );
+        await log?.(
+          `Found ${browsed.length} more listing${browsed.length === 1 ? '' : 's'} for ${pretty}`,
+          'retrying',
+        );
       }
     } catch (error) {
       logger.warn(jobMsg(jobId, `browse — ${label}: reverse-image failed, keeping catalog`));
@@ -155,6 +177,7 @@ async function matchGarment(garment, jobId, tools, notes, prepare) {
     }
   } else if (shouldEarlyExit(best)) {
     logger.info(jobMsg(jobId, `match — ${label}: skip Browserbase, visual confirmed an item`));
+    await log?.(`Confirmed a match for ${pretty}`, 'judging');
     agentLog('F', 'matchingLoop.js:earlyExit', 'skipped Browserbase', {
       jobId,
       category: label,
@@ -164,6 +187,7 @@ async function matchGarment(garment, jobId, tools, notes, prepare) {
   }
 
   await notes.ranking();
+  await log?.(`Picking matches for ${pretty}`, 'ranking');
   let matches = [];
   try {
     matches = await tools.rank(next, candidates, visualScores, jobId);
@@ -174,7 +198,7 @@ async function matchGarment(garment, jobId, tools, notes, prepare) {
   return { garment: next, matches };
 }
 
-async function runMatchLoop(garments, jobId, step, tools, prepare) {
+async function runMatchLoop(garments, jobId, step, tools, prepare, log) {
   logger.info(jobMsg(jobId, `match — pipelined ${garments.length} garment${garments.length === 1 ? '' : 's'}`));
   const notes = {
     sourcing: onceStep(() => step('sourcing', 'searching catalogs')),
@@ -183,7 +207,7 @@ async function runMatchLoop(garments, jobId, step, tools, prepare) {
     ranking: onceStep(() => step('ranking', 'picking the best matches')),
   };
   const ranked = await Promise.all(
-    garments.map((garment) => matchGarment(garment, jobId, tools, notes, prepare)),
+    garments.map((garment) => matchGarment(garment, jobId, tools, notes, prepare, log)),
   );
   const kept = ranked.filter((item) => !item.dropped);
   return kept.map(({ garment, matches }) => ({ garment, matches }));
@@ -192,6 +216,7 @@ async function runMatchLoop(garments, jobId, step, tools, prepare) {
 export async function matchOutfit(garments, jobId, options = {}) {
   const {
     onStep,
+    onLog,
     forceMock = false,
     resolveMode = resolveSourceMode,
     retrieve = retrieveCandidates,
@@ -204,9 +229,12 @@ export async function matchOutfit(garments, jobId, options = {}) {
   const step = async (status, note) => {
     if (onStep) await onStep(status, note);
   };
+  const log = async (message, status) => {
+    if (onLog) await onLog(message, status);
+  };
   const mode = await resolveMode(forceMock);
   if (mode === 'match-loop') {
-    return runMatchLoop(garments, jobId, step, { retrieve, judge, browse, rank }, prepare);
+    return runMatchLoop(garments, jobId, step, { retrieve, judge, browse, rank }, prepare, log);
   }
 
   await step('sourcing', 'searching catalogs');

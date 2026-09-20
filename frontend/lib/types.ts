@@ -79,7 +79,7 @@ export type IdentifyStatus =
   | 'done'
   | 'error';
 
-export { IDENTIFY_STATUS_COPY } from './identifyCopy';
+export { IDENTIFY_STATUS_COPY, IDENTIFY_STAGE_ORDER } from './identifyCopy';
 
 export type IdentifyResult = {
   job_id: string;
@@ -96,6 +96,7 @@ export type IdentifyResult = {
   }>;
   error?: string;
   steps?: Array<{ status: IdentifyStatus; at: string; note?: string }>;
+  logs?: Array<{ at: string; message: string; status?: IdentifyStatus }>;
 };
 
 export type RecentSearch = {

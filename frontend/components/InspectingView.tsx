@@ -1,45 +1,43 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Dimensions, Easing, Image, Platform, StyleSheet, Text, View } from 'react-native';
+import { Animated, Dimensions, Easing, Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { IDENTIFY_STATUS_COPY, IdentifyResult, IdentifyStatus } from '../lib/types';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
+import { CATEGORY_LABELS, IdentifyResult, IdentifyStatus } from '../lib/types';
+import {
+  formatIdentifyLog,
+  IDENTIFY_STAGE_ORDER,
+  identifyProgressCeiling,
+  identifyProgressFloor,
+  identifyStageIndex,
+  identifyStatusCopy,
+} from '../lib/identifyCopy';
+import { AnalysisRegion, PROBE_REGIONS, VisionAnalysisPanel } from './VisionAnalysisPanel';
 import {
   ACCENT,
-  SURFACE_MUTED,
-  TEXT_PRIMARY,
-  EASE_OUT_EXPO,
+  BORDER,
+  FONT_BOLD,
+  FONT_MEDIUM,
+  FONT_SEMIBOLD,
   FONT_SERIF_SEMIBOLD,
-  FS_LG,
+  FS_SM,
+  SURFACE,
+  SURFACE_MUTED,
+  TEXT_MUTED,
+  TEXT_PRIMARY,
+  TEXT_SECONDARY,
 } from '../lib/theme';
 
 const useNativeDriver = Platform.OS !== 'web';
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
-// Media row is full-bleed. A little extra width on each side gives the slow
-// leftward drift room to move without ever exposing a gap at the edges.
-const BLEED = 30;
+// Media row is full-bleed and sits flush with the screen: the analysis panel
+// paints HUD chrome against its own edges, so nothing may overhang the clip.
 const GAP = 8;
-const STACK_GAP = 6;
-const MAX_STACK = 4;
-const ROW_W = SCREEN_W + BLEED * 2;
-const CELL_W = (ROW_W - GAP) / 2;
+const CELL_W = (SCREEN_W - GAP) / 2;
 const BAND_H = Math.min(Math.round(CELL_W * 1.82), Math.round(SCREEN_H * 0.5));
-const DRIFT_MS = 26000;
-
-// Progress bar shares the app's "crawl then finish" psychology: it never
-// completes on its own — it decelerates toward a ceiling and only snaps to full
-// once the real job reports done.
-const CRAWL_CEILING = 0.9;
-const CRAWL_MS = 18000;
 const FINISH_MS = 340;
-
-const TEXT_CYCLE_MS = 1900;
-
-// Intrinsic size cache so each source image is measured only once.
-const sizeCache = new Map<string, { w: number; h: number }>();
-
-function clamp01(v: number) {
-  return Math.max(0, Math.min(1, v));
-}
+const LOG_LIMIT = 2;
 
 function validBbox(b: unknown): b is number[] {
   return Array.isArray(b) && b.length === 4 && b[2] > b[0] && b[3] > b[1];
@@ -48,85 +46,6 @@ function validBbox(b: unknown): b is number[] {
 function shorten(text: string, max = 26): string {
   const clean = text.trim();
   return clean.length > max ? `${clean.slice(0, max - 1).trimEnd()}…` : clean;
-}
-
-// Aspect-correct "cover" crop of a normalized [x1,y1,x2,y2] region. Uses the
-// image's real pixel size so the garment is never stretched — it's scaled
-// uniformly and clipped, exactly framing the isolated piece.
-function GarmentCrop({ uri, bbox, width, height, pad = 0.05 }: {
-  uri: string;
-  bbox: number[];
-  width: number;
-  height: number;
-  pad?: number;
-}) {
-  const [dims, setDims] = useState(() => sizeCache.get(uri) ?? null);
-
-  useEffect(() => {
-    if (dims) return;
-    let alive = true;
-    Image.getSize(
-      uri,
-      (w, h) => {
-        if (!alive) return;
-        sizeCache.set(uri, { w, h });
-        setDims({ w, h });
-      },
-      () => {},
-    );
-    return () => {
-      alive = false;
-    };
-  }, [uri, dims]);
-
-  if (!dims) {
-    return <View style={{ width, height, backgroundColor: SURFACE_MUTED }} />;
-  }
-
-  const x1 = clamp01(bbox[0] - pad);
-  const y1 = clamp01(bbox[1] - pad);
-  const x2 = clamp01(bbox[2] + pad);
-  const y2 = clamp01(bbox[3] + pad);
-  const cropW = Math.max((x2 - x1) * dims.w, 1);
-  const cropH = Math.max((y2 - y1) * dims.h, 1);
-  const scale = Math.max(width / cropW, height / cropH);
-  const dispW = dims.w * scale;
-  const dispH = dims.h * scale;
-  const left = -(x1 * dims.w * scale) + (width - cropW * scale) / 2;
-  const top = -(y1 * dims.h * scale) + (height - cropH * scale) / 2;
-
-  return (
-    <View style={{ width, height, overflow: 'hidden', backgroundColor: SURFACE_MUTED }}>
-      <Image source={{ uri }} style={{ position: 'absolute', width: dispW, height: dispH, left, top }} />
-    </View>
-  );
-}
-
-function AnimatedIn({ delay, style, children }: { delay: number; style?: object; children: React.ReactNode }) {
-  const opacity = useRef(new Animated.Value(0)).current;
-  const translateY = useRef(new Animated.Value(12)).current;
-  useEffect(() => {
-    Animated.parallel([
-      Animated.timing(opacity, { toValue: 1, duration: 420, delay, easing: Easing.out(Easing.cubic), useNativeDriver }),
-      Animated.timing(translateY, { toValue: 0, duration: 420, delay, easing: Easing.out(Easing.cubic), useNativeDriver }),
-    ]).start();
-  }, [opacity, translateY, delay]);
-  return <Animated.View style={[style, { opacity, transform: [{ translateY }] }]}>{children}</Animated.View>;
-}
-
-function Shimmer({ height }: { height: number }) {
-  const pulse = useRef(new Animated.Value(0.5)).current;
-  useEffect(() => {
-    const loop = Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulse, { toValue: 1, duration: 720, easing: Easing.inOut(Easing.ease), useNativeDriver }),
-        Animated.timing(pulse, { toValue: 0.5, duration: 720, easing: Easing.inOut(Easing.ease), useNativeDriver }),
-      ]),
-    );
-    loop.start();
-    return () => loop.stop();
-  }, [pulse]);
-  return <Animated.View style={{ width: '100%', height, backgroundColor: SURFACE_MUTED, opacity: pulse }} />;
 }
 
 function BouncingDots() {
@@ -154,11 +73,45 @@ function BouncingDots() {
   );
 }
 
+function ScanBeam({ width, height, active }: { width: number; height: number; active: boolean }) {
+  const y = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!active) {
+      y.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(y, { toValue: 1, duration: 2400, easing: Easing.inOut(Easing.quad), useNativeDriver }),
+        Animated.timing(y, { toValue: 0, duration: 2400, easing: Easing.inOut(Easing.quad), useNativeDriver }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [active, y]);
+  const translateY = y.interpolate({ inputRange: [0, 1], outputRange: [-36, height] });
+  return (
+    <Animated.View pointerEvents="none" style={[styles.scanWrap, { width, height }]}>
+      <Animated.View style={[styles.scanBeam, { width, transform: [{ translateY }] }]}>
+        <LinearGradient
+          colors={['rgba(156,107,65,0)', 'rgba(156,107,65,0.55)', 'rgba(156,107,65,0)']}
+          style={StyleSheet.absoluteFill}
+        />
+      </Animated.View>
+    </Animated.View>
+  );
+}
+
+type JobLog = { at?: string; message: string; status?: IdentifyStatus };
+type JobStep = { status: IdentifyStatus; at: string; note?: string };
+
 interface InspectingViewProps {
   uri: string;
   isVideo: boolean;
   status: IdentifyStatus;
   items: IdentifyResult['items'];
+  steps?: JobStep[];
+  logs?: JobLog[];
   keyframes?: string[];
   done: boolean;
   onFinished: () => void;
@@ -169,7 +122,8 @@ export const InspectingView: React.FC<InspectingViewProps> = ({
   isVideo,
   status,
   items,
-  keyframes,
+  steps,
+  logs,
   done,
   onFinished,
 }) => {
@@ -181,107 +135,131 @@ export const InspectingView: React.FC<InspectingViewProps> = ({
     Animated.timing(contentIn, { toValue: 1, duration: 460, delay: 150, easing: Easing.out(Easing.cubic), useNativeDriver }).start();
   }, [flash, contentIn]);
 
-  // ----- slow, one-directional leftward drift of the media row -----
-  const drift = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    const anim = Animated.timing(drift, { toValue: -BLEED, duration: DRIFT_MS, easing: Easing.linear, useNativeDriver });
-    anim.start();
-    return () => anim.stop();
-  }, [drift]);
-
   // ----- video player (created only for video, else null source) -----
   const player = useVideoPlayer(isVideo ? uri : null, (p) => {
     p.loop = true;
     p.muted = true;
     p.play();
   });
-  // #region agent log
   useEffect(() => {
-    if (isVideo) {
-      player.loop = true;
-      player.muted = true;
-      player.play();
-    }
-    fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'a21ccc'},body:JSON.stringify({sessionId:'a21ccc',runId:'post-fix',hypothesisId:'D',location:'InspectingView.tsx:player',message:'inspecting video player setup',data:{isVideo,uriScheme:uri?uri.slice(0,40):null,uriLooksLikeVideo:/\.(mp4|mov|webm|m4v|mkv)$/i.test((uri||'').split('?')[0]),uriIsBlob:Boolean(uri?.startsWith('blob:')),playerStatus:(player as {status?: string})?.status||null,playing:Boolean((player as {playing?: boolean})?.playing)},timestamp:Date.now()})}).catch(()=>{});
+    if (!isVideo) return;
+    player.loop = true;
+    player.muted = true;
+    player.play();
   }, [isVideo, uri, player]);
-  // #endregion
 
-  // ----- right column: the isolated garments the pipeline detected -----
-  const garments = useMemo(
-    () => (isVideo ? [] : items.map((i) => i.garment).filter((g) => validBbox(g.bbox)).slice(0, MAX_STACK)),
-    [items, isVideo],
+  // ----- right column: regions the analysis panel walks through -----
+  // Until the pipeline reports real detections the panel probes a generic
+  // top-down sweep of the body; once garments land it switches to their real
+  // boxes and never shrinks back to a shorter list mid-run.
+  const detected = useMemo<AnalysisRegion[]>(
+    () =>
+      items
+        .map((i) => i.garment)
+        .filter((g) => validBbox(g.bbox))
+        .slice()
+        .sort((a, b) => a.bbox[1] - b.bbox[1])
+        .map((g) => ({
+          id: g.id,
+          kind: g.category,
+          label: shorten(g.description || CATEGORY_LABELS[g.category] || g.category, 22),
+          confidence: g.confidence ?? 0.9,
+          bbox: g.bbox,
+        })),
+    [items],
   );
-  const videoFrames = useMemo(() => (isVideo ? (keyframes || []).slice(0, 3) : []), [isVideo, keyframes]);
 
-  const rightStack = (() => {
-    if (garments.length > 0) {
-      const n = garments.length;
-      const slotH = (BAND_H - (n - 1) * STACK_GAP) / n;
-      return garments.map((g, idx) => (
-        <AnimatedIn key={g.id} delay={idx * 150} style={{ marginTop: idx ? STACK_GAP : 0 }}>
-          <GarmentCrop uri={uri} bbox={g.bbox} width={CELL_W} height={slotH} />
-        </AnimatedIn>
-      ));
-    }
-    if (videoFrames.length > 0) {
-      const n = videoFrames.length;
-      const slotH = (BAND_H - (n - 1) * STACK_GAP) / n;
-      return videoFrames.map((frame, idx) => (
-        <AnimatedIn key={`${frame.slice(0, 24)}-${idx}`} delay={idx * 150} style={{ marginTop: idx ? STACK_GAP : 0 }}>
-          <Image source={{ uri: frame }} style={{ width: CELL_W, height: slotH }} resizeMode="cover" />
-        </AnimatedIn>
-      ));
-    }
-    // Nothing detected yet — quiet shimmer, never silhouettes or random crops.
-    const slotH = (BAND_H - 2 * STACK_GAP) / 3;
-    return [0, 1, 2].map((i) => (
-      <View key={i} style={{ marginTop: i ? STACK_GAP : 0 }}>
-        <Shimmer height={slotH} />
-      </View>
-    ));
-  })();
-
-  // ----- cycling status text -----
-  const messages = useMemo(() => {
-    const base = IDENTIFY_STATUS_COPY[status] || 'Analyzing photo';
-    const list = [base];
-    items.forEach(({ garment }) => {
-      const label = garment.description || garment.category;
-      if (label) list.push(`Finding matching ${shorten(label)}`);
+  const [regions, setRegions] = useState<AnalysisRegion[]>(PROBE_REGIONS);
+  useEffect(() => {
+    if (detected.length === 0) return;
+    setRegions((prev) => {
+      const real = prev !== PROBE_REGIONS;
+      return real && prev.length >= detected.length ? prev : detected;
     });
-    return list;
-  }, [status, items]);
+  }, [detected]);
 
-  const [msgTick, setMsgTick] = useState(0);
+  const [regionsVersion, setRegionsVersion] = useState(0);
+  useEffect(() => {
+    setRegionsVersion((v) => v + 1);
+  }, [regions]);
+
+  const [inspecting, setInspecting] = useState(false);
+  const inspectScale = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    Animated.spring(inspectScale, {
+      toValue: inspecting ? 1.06 : 1,
+      friction: 7,
+      useNativeDriver,
+    }).start();
+  }, [inspecting, inspectScale]);
+
+  const [focused, setFocused] = useState<AnalysisRegion | null>(null);
+  const mediaType = isVideo ? 'video' : 'image';
+  const latestNote = steps?.[steps.length - 1]?.note;
+  const headline = focused
+    ? `Matching ${shorten(focused.label)}`
+    : identifyStatusCopy(status, mediaType, latestNote) || 'Analyzing photo';
+
+  const [shownHeadline, setShownHeadline] = useState(headline);
   const textOpacity = useRef(new Animated.Value(1)).current;
   useEffect(() => {
-    const timer = setInterval(() => {
-      Animated.timing(textOpacity, { toValue: 0, duration: 220, easing: Easing.in(Easing.quad), useNativeDriver }).start(
-        ({ finished }) => {
-          if (!finished) return;
-          setMsgTick((t) => t + 1);
-          Animated.timing(textOpacity, { toValue: 1, duration: 260, easing: Easing.out(Easing.quad), useNativeDriver }).start();
-        },
-      );
-    }, TEXT_CYCLE_MS);
-    return () => clearInterval(timer);
-  }, [textOpacity]);
-  const message = messages[msgTick % messages.length];
+    if (headline === shownHeadline) return;
+    let alive = true;
+    Animated.timing(textOpacity, { toValue: 0, duration: 160, easing: Easing.in(Easing.quad), useNativeDriver }).start(
+      ({ finished }) => {
+        if (!finished || !alive) return;
+        setShownHeadline(headline);
+        Animated.timing(textOpacity, { toValue: 1, duration: 220, easing: Easing.out(Easing.quad), useNativeDriver }).start();
+      },
+    );
+    return () => {
+      alive = false;
+    };
+  }, [headline, shownHeadline, textOpacity]);
 
-  // ----- progress bar -----
+  const stageIndex = identifyStageIndex(status);
+  const prevStatus = useRef(status);
+  useEffect(() => {
+    if (prevStatus.current === status) return;
+    prevStatus.current = status;
+    Haptics.selectionAsync().catch(() => {});
+  }, [status]);
+
+  // ----- progress bar: jumps to the real stage, then crawls inside it -----
   const progress = useRef(new Animated.Value(0)).current;
+  const [pct, setPct] = useState(0);
+  useEffect(() => {
+    const id = progress.addListener(({ value }) => setPct(Math.round(value * 100)));
+    return () => progress.removeListener(id);
+  }, [progress]);
+
   useEffect(() => {
     if (done) return;
-    progress.setValue(0);
-    const crawl = Animated.timing(progress, {
-      toValue: CRAWL_CEILING,
-      duration: CRAWL_MS,
-      easing: Easing.bezier(...EASE_OUT_EXPO),
+    const floor = identifyProgressFloor(status);
+    const ceil = identifyProgressCeiling(status);
+    let crawl: Animated.CompositeAnimation | null = null;
+    const jump = Animated.timing(progress, {
+      toValue: floor,
+      duration: 420,
+      easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
     });
-    crawl.start();
-    return () => crawl.stop();
-  }, [done, progress]);
+    jump.start(({ finished }) => {
+      if (!finished) return;
+      crawl = Animated.timing(progress, {
+        toValue: ceil,
+        duration: 16000,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: false,
+      });
+      crawl.start();
+    });
+    return () => {
+      jump.stop();
+      crawl?.stop();
+    };
+  }, [status, done, progress]);
+
   useEffect(() => {
     if (!done) return;
     const finish = Animated.timing(progress, {
@@ -297,36 +275,92 @@ export const InspectingView: React.FC<InspectingViewProps> = ({
   }, [done, progress, onFinished]);
   const fillWidth = progress.interpolate({ inputRange: [0, 1], outputRange: ['0%', '100%'] });
 
+  const onFocusRegion = (region: AnalysisRegion | null) => {
+    setFocused(region);
+    if (region) Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  };
+
   return (
     <View style={styles.container}>
       <Animated.View style={[styles.body, { opacity: contentIn }]}>
         <View style={styles.mediaClip}>
-          <Animated.View style={[styles.row, { transform: [{ translateX: drift }] }]}>
-            <View style={styles.cell}>
-              {isVideo ? (
-                <VideoView player={player} style={styles.media} contentFit="cover" nativeControls={false} playsInline />
-              ) : (
-                <Image source={{ uri }} style={styles.media} resizeMode="cover" />
-              )}
-            </View>
+          <View style={styles.row}>
+            <Pressable
+              onPressIn={() => setInspecting(true)}
+              onPressOut={() => setInspecting(false)}
+              style={styles.cell}
+              accessibilityRole="button"
+              accessibilityLabel="Hold to inspect the original photo"
+            >
+              <Animated.View style={{ transform: [{ scale: inspectScale }] }}>
+                {isVideo ? (
+                  <VideoView player={player} style={styles.media} contentFit="cover" nativeControls={false} playsInline />
+                ) : (
+                  <Image source={{ uri }} style={styles.media} resizeMode="cover" />
+                )}
+              </Animated.View>
+              <ScanBeam width={CELL_W} height={BAND_H} active={!inspecting && !done} />
+              {inspecting ? (
+                <View style={styles.inspectBadge}>
+                  <Text style={styles.inspectBadgeText}>INSPECT</Text>
+                </View>
+              ) : null}
+            </Pressable>
 
             <View style={styles.gap} />
 
-            <View style={styles.cell}>{rightStack}</View>
-          </Animated.View>
+            <View style={styles.cell}>
+              <VisionAnalysisPanel
+                uri={uri}
+                isVideo={isVideo}
+                width={CELL_W}
+                height={BAND_H}
+                regions={regions}
+                status={status}
+                regionsVersion={regionsVersion}
+                player={isVideo ? player : undefined}
+                jobLogs={logs}
+                focusedId={focused?.id}
+                onFocusRegion={onFocusRegion}
+              />
+            </View>
+          </View>
         </View>
 
         <View style={styles.footer}>
+          <View style={styles.progressMeta}>
+            <Text style={styles.progressLabel}>{done ? 'Ready' : 'Progress'}</Text>
+            <Text style={styles.progressPct}>{pct}%</Text>
+          </View>
           <View style={styles.progressTrack}>
             <Animated.View style={[styles.progressFill, { width: fillWidth }]} />
           </View>
 
-          <View style={styles.statusRow}>
-            <Animated.Text style={[styles.statusText, { opacity: textOpacity }]} numberOfLines={1}>
-              {message}
-            </Animated.Text>
-            <BouncingDots />
+          <View style={styles.stageRow}>
+            {IDENTIFY_STAGE_ORDER.map((stage, index) => {
+              const active = index <= stageIndex;
+              const current = index === stageIndex && !done;
+              return (
+                <View
+                  key={stage}
+                  style={[styles.stagePip, active && styles.stagePipActive, current && styles.stagePipCurrent]}
+                />
+              );
+            })}
           </View>
+
+          <View style={styles.statusRow}>
+            <Animated.Text style={[styles.statusText, { opacity: textOpacity }]} numberOfLines={2}>
+              {shownHeadline}
+            </Animated.Text>
+            {done ? null : <BouncingDots />}
+          </View>
+
+          <Text style={styles.hint}>
+            {detected.length > 0
+              ? 'Hold the photo to inspect · Tap a piece to follow it'
+              : 'Hold the photo to inspect'}
+          </Text>
         </View>
       </Animated.View>
 
@@ -352,9 +386,8 @@ const styles = StyleSheet.create({
   },
   row: {
     flexDirection: 'row',
-    width: ROW_W,
+    width: SCREEN_W,
     height: BAND_H,
-    marginLeft: -BLEED,
   },
   gap: {
     width: GAP,
@@ -369,15 +402,60 @@ const styles = StyleSheet.create({
     width: CELL_W,
     height: BAND_H,
   },
+  scanWrap: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    overflow: 'hidden',
+  },
+  scanBeam: {
+    height: 36,
+  },
+  inspectBadge: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: 'rgba(43,32,24,0.72)',
+  },
+  inspectBadgeText: {
+    fontFamily: FONT_BOLD,
+    fontSize: 9,
+    letterSpacing: 1.2,
+    color: '#FBF3E7',
+  },
   footer: {
     width: SCREEN_W - 48,
+  },
+  progressMeta: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'baseline',
+    marginTop: 16,
+    marginBottom: 6,
+  },
+  progressLabel: {
+    fontFamily: FONT_BOLD,
+    fontSize: 10.5,
+    letterSpacing: 1.3,
+    color: ACCENT,
+    textTransform: 'uppercase',
+  },
+  progressPct: {
+    fontFamily: FONT_SEMIBOLD,
+    fontSize: FS_SM,
+    color: TEXT_SECONDARY,
+    fontVariant: ['tabular-nums'],
   },
   progressTrack: {
     width: '100%',
     height: 5,
     borderRadius: 999,
     backgroundColor: SURFACE_MUTED,
-    marginTop: 28,
     overflow: 'hidden',
   },
   progressFill: {
@@ -385,19 +463,37 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: ACCENT,
   },
+  stageRow: {
+    flexDirection: 'row',
+    gap: 6,
+    marginTop: 12,
+  },
+  stagePip: {
+    flex: 1,
+    height: 3,
+    borderRadius: 99,
+    backgroundColor: SURFACE_MUTED,
+  },
+  stagePipActive: {
+    backgroundColor: 'rgba(156,107,65,0.45)',
+  },
+  stagePipCurrent: {
+    backgroundColor: ACCENT,
+  },
   statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 20,
-    minHeight: 28,
+    marginTop: 12,
+    minHeight: 32,
   },
   statusText: {
     fontFamily: FONT_SERIF_SEMIBOLD,
-    fontSize: FS_LG,
+    fontSize: 22,
     color: TEXT_PRIMARY,
     letterSpacing: 0.2,
     textAlign: 'center',
+    flexShrink: 1,
   },
   dotsRow: {
     flexDirection: 'row',
@@ -411,6 +507,13 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
     backgroundColor: ACCENT,
+  },
+  hint: {
+    marginTop: 14,
+    fontFamily: FONT_MEDIUM,
+    fontSize: 11,
+    color: TEXT_MUTED,
+    textAlign: 'center',
   },
   flash: {
     backgroundColor: '#FFFFFF',
