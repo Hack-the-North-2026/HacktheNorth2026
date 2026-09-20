@@ -7,7 +7,9 @@
     "install:all": "npm ci --legacy-peer-deps --prefix frontend && npm ci --include=optional --prefix backend"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
+    "@types/react": "~19.2.4",
+    "concurrently": "^9.1.2",
+    "typescript": "~6.0.3"
   },
   "dependencies": {
     "expo": "^57.0.24",

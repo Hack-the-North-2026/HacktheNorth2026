@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Delete zone shown at the bottom of the screen while the user drags the bubble.
+  Hidden by default (visibility=GONE); shown as soon as a drag gesture starts.
+-->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/delete_zone"
+    android:layout_width="match_parent"
+    android:layout_height="80dp"
+    android:background="@drawable/delete_zone_background"
+    android:gravity="center"
+    android:orientation="horizontal"
+    android:padding="12dp"
+    android:visibility="gone">
+
+    <!-- X icon using a built-in system vector -->
+    <ImageView
+        android:id="@+id/delete_zone_icon"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_marginEnd="8dp"
+        android:src="@android:drawable/ic_menu_close_clear_cancel"
+        android:tint="#FFFFFFFF"
+        android:contentDescription="Remove overlay" />
+
+    <TextView
+        android:id="@+id/delete_zone_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Release to remove"
+        android:textColor="#FFFFFFFF"
+        android:textSize="15sp"
+        android:textStyle="bold" />
+
+</LinearLayout>

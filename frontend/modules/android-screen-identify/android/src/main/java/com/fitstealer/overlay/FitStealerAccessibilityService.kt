@@ -2,7 +2,10 @@ package com.fitstealer.overlay
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.net.Uri
@@ -28,39 +31,27 @@ import java.util.UUID
 /**
  * FitStealerAccessibilityService
  *
- * Draws a floating bubble over the OS using TYPE_ACCESSIBILITY_OVERLAY (no
- * extra permission beyond BIND_ACCESSIBILITY_SERVICE + canTakeScreenshot).
+ * Draws a floating bubble over the OS using TYPE_ACCESSIBILITY_OVERLAY.
+ *
+ * Features:
+ *  - Drag-to-delete: drag the bubble to the bottom "X" zone to dismiss it
+ *    (stops the service so the bubble disappears entirely).
+ *  - Lock screen exclusion: bubble is hidden whenever the screen is off or the
+ *    lock screen is showing, and restored when the user unlocks the device.
  *
  * Flow on tap:
- *   1. takeScreenshot()  — API 30+; requires canTakeScreenshot=true in config XML
- *   2. Compress to JPEG  — in a background thread
- *   3. POST /api/identify multipart — origin: android_overlay
+ *   1. takeScreenshot()  — API 30+
+ *   2. Compress to JPEG  — background thread
+ *   3. POST /api/identify multipart
  *   4. Parse job_id from response JSON
- *   5. Fire fit-stealer://job/<job_id> deep link so the Expo app opens results
- *
- * Privacy: capture happens ONLY on explicit tap. No always-on buffer. No
- * keystroke listening.
+ *   5. Fire fit-stealer://job/<job_id> deep link
  */
 class FitStealerAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "FitStealer.Overlay"
 
-        /**
-         * API base URL.
-         *
-         * Priority order:
-         *  1. BuildConfig.FIT_STEALER_API_URL   — injected by the config plugin from
-         *     EXPO_PUBLIC_API_BASE_URL at prebuild time.
-         *  2. Android emulator gateway           — works when running on the default
-         *     AVD connected to the dev machine.
-         *
-         * On a physical device pointed at a local dev server you MUST set
-         * EXPO_PUBLIC_API_BASE_URL=http://<your-LAN-IP>:4000 before running prebuild.
-         */
         private val API_BASE: String by lazy {
-            // BuildConfig field is injected by app.plugin.js via resValue.
-            // Falls back to emulator gateway so `expo run:android` works out of the box.
             try {
                 val clazz = Class.forName("com.fitstealer.app.BuildConfig")
                 val field = clazz.getField("FIT_STEALER_API_URL")
@@ -71,22 +62,45 @@ class FitStealerAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Bubble size in dp → converted to px at runtime via DisplayMetrics.
         private const val BUBBLE_SIZE_DP = 54f
         private const val BUBBLE_MARGIN_DP = 16f
+
+        /** Delete zone is visible when bubble centre is within this many px of the bottom. */
+        private const val DELETE_ZONE_HEIGHT_DP = 96f
     }
 
-    // WindowManager reference for adding/removing the bubble view.
     private var windowManager: WindowManager? = null
 
-    // The inflated bubble view currently shown on screen.
+    // The draggable bubble.
     private var bubbleView: View? = null
-
-    // WindowManager layout params so we can drag the bubble.
     private var bubbleParams: WindowManager.LayoutParams? = null
 
-    // Main-thread handler for UI updates.
+    // The full-width delete zone anchored to the screen bottom.
+    private var deleteZoneView: View? = null
+    private var deleteZoneParams: WindowManager.LayoutParams? = null
+
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    // Tracks whether the bubble should be visible (hidden on lock screen).
+    private var isBubbleVisible = true
+
+    // -----------------------------------------------------------------------
+    // Lock-screen broadcast receiver
+    // -----------------------------------------------------------------------
+
+    private val lockScreenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF,
+                Intent.ACTION_USER_PRESENT -> {
+                    // ACTION_SCREEN_OFF  → screen turned off (lock screen imminent)
+                    // ACTION_USER_PRESENT → device fully unlocked
+                    val shouldShow = intent.action == Intent.ACTION_USER_PRESENT
+                    mainHandler.post { setBubbleVisible(shouldShow) }
+                }
+            }
+        }
+    }
 
     // -----------------------------------------------------------------------
     // AccessibilityService lifecycle
@@ -96,18 +110,24 @@ class FitStealerAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         Log.i(TAG, "Service connected — adding overlay bubble")
 
-        // Configure what events we listen for (none needed; we just want the overlay).
         serviceInfo = serviceInfo?.also { info ->
             info.eventTypes = AccessibilityServiceInfo.FEEDBACK_GENERIC
             info.feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
             info.flags = AccessibilityServiceInfo.DEFAULT
         }
 
+        // Register screen-off / unlock receiver so we can hide on lock screen.
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        registerReceiver(lockScreenReceiver, filter)
+
         showBubble()
     }
 
     override fun onAccessibilityEvent(event: android.view.accessibility.AccessibilityEvent?) {
-        // We don't consume accessibility events — the service is overlay-only.
+        // Overlay-only; we don't consume accessibility events.
     }
 
     override fun onInterrupt() {
@@ -116,8 +136,38 @@ class FitStealerAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try { unregisterReceiver(lockScreenReceiver) } catch (_: Exception) {}
         removeBubble()
+        removeDeleteZone()
         Log.i(TAG, "Service destroyed — bubble removed")
+    }
+
+    // -----------------------------------------------------------------------
+    // Bubble visibility (lock-screen hiding)
+    // -----------------------------------------------------------------------
+
+    private fun setBubbleVisible(visible: Boolean) {
+        if (isBubbleVisible == visible) return
+        isBubbleVisible = visible
+        val wm = windowManager ?: return
+        val view = bubbleView ?: return
+        val params = bubbleParams ?: return
+
+        if (visible) {
+            // Restore normal interactive flags.
+            params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        } else {
+            // Make view invisible but keep it in window hierarchy so we can
+            // flip it back quickly — or simply remove and re-add.
+            params.flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        }
+        view.visibility = if (visible) View.VISIBLE else View.GONE
+        try { wm.updateViewLayout(view, params) } catch (_: Exception) {}
     }
 
     // -----------------------------------------------------------------------
@@ -131,9 +181,9 @@ class FitStealerAccessibilityService : AccessibilityService() {
         val density = resources.displayMetrics.density
         val sizePx = (BUBBLE_SIZE_DP * density).toInt()
         val marginPx = (BUBBLE_MARGIN_DP * density).toInt()
+        val deleteZoneHeightPx = (DELETE_ZONE_HEIGHT_DP * density).toInt()
 
-        // TYPE_ACCESSIBILITY_OVERLAY draws above most system UI without
-        // requiring SYSTEM_ALERT_WINDOW when the AccessibilityService is active.
+        // ---- Bubble params ----
         val params = WindowManager.LayoutParams(
             sizePx,
             sizePx,
@@ -145,7 +195,7 @@ class FitStealerAccessibilityService : AccessibilityService() {
         ).apply {
             gravity = Gravity.TOP or Gravity.END
             x = marginPx
-            y = marginPx * 6  // Start below the status bar area
+            y = marginPx * 6
         }
         bubbleParams = params
 
@@ -155,12 +205,41 @@ class FitStealerAccessibilityService : AccessibilityService() {
             null,
         )
 
-        // Drag support — let the user reposition the bubble.
+        // ---- Delete zone params (hidden initially) ----
+        val dzParams = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            deleteZoneHeightPx,
+            WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        }
+        deleteZoneParams = dzParams
+
+        val dzView = inflater.inflate(
+            resources.getIdentifier("overlay_delete_zone", "layout", packageName),
+            null,
+        )
+        deleteZoneView = dzView
+
+        // Add delete zone first so it renders beneath the bubble.
+        wm.addView(dzView, dzParams)
+        wm.addView(view, params)
+        bubbleView = view
+
+        // ---- Touch / drag logic ----
         var initialX = 0
         var initialY = 0
         var touchX = 0f
         var touchY = 0f
         var moved = false
+
+        // Screen dimensions used for delete-zone hit test.
+        val screenHeight = resources.displayMetrics.heightPixels
 
         view.setOnTouchListener { _, event ->
             when (event.action) {
@@ -172,31 +251,67 @@ class FitStealerAccessibilityService : AccessibilityService() {
                     moved = false
                     true
                 }
+
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - touchX).toInt()
                     val dy = (event.rawY - touchY).toInt()
-                    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) moved = true
-                    params.x = initialX - dx  // RTL-aware (Gravity.END)
-                    params.y = initialY + dy
-                    wm.updateViewLayout(view, params)
+                    if (!moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+                        moved = true
+                        // Reveal the delete zone.
+                        dzView.visibility = View.VISIBLE
+                    }
+                    if (moved) {
+                        params.x = initialX - dx   // RTL-aware (Gravity.END)
+                        params.y = initialY + dy
+                        try { wm.updateViewLayout(view, params) } catch (_: Exception) {}
+
+                        // Highlight the zone when bubble is over it.
+                        val bubbleCentreY = params.y + sizePx / 2
+                        val inZone = bubbleCentreY >= screenHeight - deleteZoneHeightPx
+                        dzView.alpha = if (inZone) 1f else 0.75f
+                    }
                     true
                 }
+
                 MotionEvent.ACTION_UP -> {
-                    if (!moved) onBubbleTapped()
+                    if (moved) {
+                        // Hide delete zone.
+                        dzView.visibility = View.GONE
+                        dzView.alpha = 0.75f
+
+                        // Check if bubble was dropped into the delete zone.
+                        val bubbleCentreY = params.y + sizePx / 2
+                        if (bubbleCentreY >= screenHeight - deleteZoneHeightPx) {
+                            // User dragged to the X zone — stop the service.
+                            Log.i(TAG, "Bubble dragged to delete zone — disabling service")
+                            disableSelf()
+                        }
+                    } else {
+                        onBubbleTapped()
+                    }
                     true
                 }
+
                 else -> false
             }
         }
-
-        wm.addView(view, params)
-        bubbleView = view
     }
 
     private fun removeBubble() {
         bubbleView?.let { view ->
-            (getSystemService(WINDOW_SERVICE) as? WindowManager)?.removeView(view)
+            try {
+                (getSystemService(WINDOW_SERVICE) as? WindowManager)?.removeView(view)
+            } catch (_: Exception) {}
             bubbleView = null
+        }
+    }
+
+    private fun removeDeleteZone() {
+        deleteZoneView?.let { view ->
+            try {
+                (getSystemService(WINDOW_SERVICE) as? WindowManager)?.removeView(view)
+            } catch (_: Exception) {}
+            deleteZoneView = null
         }
     }
 
@@ -209,8 +324,6 @@ class FitStealerAccessibilityService : AccessibilityService() {
 
     private fun onBubbleTapped() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            // takeScreenshot() is API 30+. On older devices the overlay still works
-            // but screenshot capture is unavailable — prompt the user to upgrade.
             showToast("Screenshot capture requires Android 11+")
             return
         }
@@ -226,14 +339,11 @@ class FitStealerAccessibilityService : AccessibilityService() {
         isProcessing = true
         showToast("Scanning outfit…")
 
-        // takeScreenshot is async; callback fires on the provided executor.
         takeScreenshot(
             Display.DEFAULT_DISPLAY,
             mainExecutor,
             object : TakeScreenshotCallback {
                 override fun onSuccess(result: ScreenshotResult) {
-                    // We receive a HardwareBuffer-backed bitmap. Convert to JPEG
-                    // bytes on a background thread to avoid blocking the main thread.
                     Thread {
                         try {
                             val hardwareBitmap = result.hardwareBuffer
@@ -242,7 +352,6 @@ class FitStealerAccessibilityService : AccessibilityService() {
                                     mainHandler.post { showToast("Screenshot capture failed") }
                                     return@Thread
                                 }
-                            // Hardware bitmaps cannot be compressed directly — copy to software.
                             val softBitmap = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
                             hardwareBitmap.recycle()
 
@@ -270,25 +379,13 @@ class FitStealerAccessibilityService : AccessibilityService() {
         )
     }
 
-    /**
-     * Uploads the JPEG as multipart/form-data to POST /api/identify.
-     * Runs entirely on the calling (background) thread.
-     *
-     * Multipart is built manually to avoid adding OkHttp as a dependency —
-     * OkHttp is already in the app's classpath via React Native so this is safe,
-     * but using HttpURLConnection keeps the module self-contained.
-     */
     private fun uploadAndOpen(jpegBytes: ByteArray) {
         val endpointsList = mutableListOf<String>()
         if (API_BASE.isNotBlank() && !API_BASE.contains("10.0.2.2")) {
             endpointsList.add("$API_BASE/api/identify")
         }
         endpointsList.add("http://127.0.0.1:4000/api/identify")
-        endpointsList.add("http://10.37.123.166:4000/api/identify")
         endpointsList.add("http://10.0.2.2:4000/api/identify")
-        if (API_BASE.isNotBlank() && API_BASE.contains("10.0.2.2")) {
-            endpointsList.add("$API_BASE/api/identify")
-        }
         val endpoints = endpointsList.distinct()
 
         var lastException: Exception? = null
@@ -347,13 +444,6 @@ class FitStealerAccessibilityService : AccessibilityService() {
         mainHandler.post { showToast("Network error — backend unreachable") }
     }
 
-    /**
-     * Fires fit-stealer://job/<jobId> as a new-task Intent.
-     *
-     * FLAG_ACTIVITY_NEW_TASK is required because we're starting an Activity
-     * from a Service context. The Expo app handles this deep link in its
-     * Expo Router navigation stack (app/job/[id].tsx).
-     */
     private fun openJobScreen(jobId: String) {
         val uri = Uri.parse("fit-stealer://job/$jobId")
         val intent = Intent(Intent.ACTION_VIEW, uri).apply {
@@ -365,7 +455,6 @@ class FitStealerAccessibilityService : AccessibilityService() {
             Log.i(TAG, "Opened job screen for $jobId")
         } catch (e: Exception) {
             Log.e(TAG, "Could not open job screen", e)
-            // Fallback: launch the app's main activity
             val fallback = packageManager.getLaunchIntentForPackage(packageName)?.apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
