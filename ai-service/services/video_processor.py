@@ -48,7 +48,7 @@ FRAME_LONG_EDGE = 768        # Downscale candidates for fast transfer
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 
-ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"}
+ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
 _FFMPEG_OK: bool | None = None
 
@@ -204,12 +204,20 @@ def validate_video(video_path: str) -> dict:
 def _extract_raw_frames(video_path: str, output_dir: str, fps: int = SAMPLE_FPS) -> list[str]:
     """Use ffmpeg to extract frames at the given fps. Returns sorted list of paths."""
     out_pattern = os.path.join(output_dir, "frame_%04d.jpg")
+    # Scale on extract so 8K clips never write full-res JPEGs to disk.
+    scale = (
+        f"scale='if(gte(iw,ih),{FRAME_LONG_EDGE},-2)':"
+        f"'if(gt(ih,iw),{FRAME_LONG_EDGE},-2)'"
+    )
     cmd = [
         FFMPEG_BIN,
+        "-nostdin",
+        "-hide_banner",
+        "-loglevel", "error",
         "-i", video_path,
-        "-vf", f"fps={fps}",
-        "-q:v", "2",           # high-quality JPEG
-        "-y",                   # overwrite
+        "-vf", f"fps={fps},{scale}",
+        "-q:v", "4",
+        "-y",
         out_pattern,
     ]
     try:
@@ -326,19 +334,22 @@ def extract_candidate_frames(
     scored: list[dict] = []
     for i, frame_path in enumerate(raw_paths):
         try:
-            img = Image.open(frame_path).convert("RGB")
+            with Image.open(frame_path) as opened:
+                img = opened.convert("RGB")
+                img_small = _downscale_frame(img)
+                if img_small is not img:
+                    img.close()
+                sharpness = _compute_sharpness(img_small)
+                brightness = _compute_mean_brightness(img_small)
+                img_small.close()
         except Exception as exc:
             logger.debug("ingest — skipping unreadable frame %d: %s", i, exc)
             continue
 
-        img_small = _downscale_frame(img)
-        sharpness = _compute_sharpness(img_small)
-        brightness = _compute_mean_brightness(img_small)
         timestamp = float(i) / SAMPLE_FPS  # approximate timestamp
-
         scored.append({
             "index": i,
-            "image": img_small,
+            "path": frame_path,
             "sharpness": sharpness,
             "brightness": brightness,
             "timestamp": timestamp,
@@ -393,12 +404,16 @@ def extract_candidate_frames(
         max_candidates, window_s, len(selected),
     )
 
-    # Step 5: Save the already-downscaled winners as candidates.
+    # Step 5: Copy already-scaled winners into the candidate dir.
     candidates: list[CandidateFrame] = []
     for s in selected:
         out_name = f"candidate_{s['index']:04d}.jpg"
         out_path = os.path.join(candidate_dir, out_name)
-        s["image"].save(out_path, "JPEG", quality=80)
+        src = Path(s["path"])
+        if src.is_file():
+            Path(out_path).write_bytes(src.read_bytes())
+        else:
+            continue
         candidates.append(CandidateFrame(
             path=out_path,
             timestamp=s["timestamp"],
@@ -461,14 +476,11 @@ def persist_selected_frames(
 
 def ingest_video_frames(video_path: str) -> VideoIngestResult:
     """
-    Stage V1 ingest — ffmpeg + visibility pick only. No VLM garments.
+    Stage V1 ingest — ffmpeg + sharpness windows only. No VLM.
 
-    1. validate_video()
-    2. extract_candidate_frames()
-    3. select_best_video_frames() when more than KEEP_FOR_IDENTIFICATION
+    Visibility pick belongs in See so the 30s ingest budget cannot include
+    a Baseten call. Express publishes these frames, then /tools/see keeps ≤3.
     """
-    from services.baseten_vlm import select_best_video_frames
-
     meta = validate_video(video_path)
     duration_s = float(meta["duration"])
     logger.info(
@@ -492,46 +504,20 @@ def ingest_video_frames(video_path: str) -> VideoIngestResult:
             duration=duration_s,
         )
 
-    image_paths = [c["path"] for c in candidates]
-    frame_metadata = [
-        {"index": i, "timestamp": c["timestamp"], "sharpness": c["sharpness"]}
-        for i, c in enumerate(candidates)
-    ]
-
-    if len(candidates) > KEEP_FOR_IDENTIFICATION:
-        try:
-            selected_idx, reasons = select_best_video_frames(
-                image_paths, frame_metadata, keep=KEEP_FOR_IDENTIFICATION,
-            )
-        except Exception:
-            logger.exception("ingest — visibility selection failed, using all vetted candidates")
-            selected_idx, reasons = [], {}
-
-        if not selected_idx:
-            selected_idx = list(range(min(KEEP_FOR_IDENTIFICATION, len(candidates))))
-
-        for i in selected_idx:
-            logger.info(
-                "ingest — kept frame %d @ %.1fs: %s",
-                i, frame_metadata[i]["timestamp"], reasons.get(i, "(no reason given)"),
-            )
-        image_paths = [image_paths[i] for i in selected_idx]
-        frame_metadata = [frame_metadata[i] for i in selected_idx]
-    else:
-        logger.info(
-            "ingest — %d candidates already at/below the keep threshold, skipping visibility selection",
-            len(candidates),
-        )
-
     frames = [
         {
-            "path": path,
-            "timestamp": meta["timestamp"],
-            "sharpness": meta["sharpness"],
-            "index": meta["index"],
+            "path": c["path"],
+            "timestamp": c["timestamp"],
+            "sharpness": c["sharpness"],
+            "index": i,
         }
-        for path, meta in zip(image_paths, frame_metadata)
+        for i, c in enumerate(candidates)
     ]
+    image_paths = [frame["path"] for frame in frames]
+    logger.info(
+        "ingest — %d coverage-window frames ready for See (visibility pick happens there)",
+        len(frames),
+    )
 
     return VideoIngestResult(
         garments=[],

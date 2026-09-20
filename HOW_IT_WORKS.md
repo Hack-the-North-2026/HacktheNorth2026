@@ -4,10 +4,7 @@ This is a walkthrough of what is actually built, in the order a user experiences
 
 **Fit Stealer** is a phone app: you give it a picture of an outfit, it finds the clothes, and it returns shop links. Clothing is the first use case. The long-term idea is “Shazam for whatever is on screen.”
 
-**What is live (two branches, not fully merged yet):**
-
-- **Screenshot matching agent** is on this checkout (`matching-optimization` / local `develop`): chip-first See, VisualJudge, Shopify fan-out, retries. The Expo picker here is still **images only**.
-- **Short video** is on **`origin/develop`** (teammates: commits like `e4aa66b` / `b286db3` “video support”, `345f8ae` “better video handling”). That path is functional: pick/record a ≤15s clip → keyframes → VLM → the **older** Shopify + title ranker. It does **not** use the matching agent.
+**What is live:** one identify job for both media types. A screenshot or a ≤15s clip goes through the same matching agent (SeeChip → retrieve → VisualJudge → retry / Browserbase-if-weak → honesty rank). Video adds ffmpeg keyframe ingest, a clip-hash cache, and a scan UI that shows the frames we used.
 
 ---
 
@@ -17,10 +14,10 @@ There are four runtimes. The phone never talks to AI vendors directly.
 
 | Piece | Where | Job |
 | --- | --- | --- |
-| Phone app | `frontend/` (Expo) | Pick a screenshot, show a loading screen, poll for results, render FitCards |
+| Phone app | `frontend/` (Expo) | Pick a screenshot or ≤15s clip, show live status + keyframes, poll for results, render FitCards |
 | Product API | `backend/` Express on port 4000 | Accept the upload, own the job, call tools, save the result |
 | Tool server | `ai-service/` FastAPI on port 8000 | Vision, crops, catalogs, visual compare, ranking — one tool per step |
-| Optional brain | `agent/` Cloudflare Worker | Same matching loop as Express, with a Durable Object per job and KV cache |
+| Optional brain | `agent/` Cloudflare Worker | Same matching loop as Express, with a Durable Object per job, R2 media/frames, and KV cache keyed by image or clip sha256 |
 
 On your laptop, the Expo app talks to Express. Express talks to FastAPI. FastAPI talks to Baseten, Shopify, OpenAI, Composio, and Browserbase.
 
@@ -74,13 +71,13 @@ This is the path a judge uses.
 ### Step 1 — Capture (Expo)
 
 1. Open Fit Stealer.
-2. Choose a photo from the library or take one with the camera (`expo-image-picker`). Videos are not offered.
-3. The app uploads multipart form data to `POST /api/identify`: the image, `type=image`, `origin=app`, and a device id (for recent searches).
+2. Choose a photo or a ≤15s clip from the library, or long-press for the camera (`expo-image-picker`).
+3. The app uploads multipart form data to `POST /api/identify`: field `image` + `type=image`, or field `video` + `type=video`, plus `origin=app` and a device id.
 4. Express returns a `job_id` immediately. The UI shows the scanning circle and starts polling `GET /jobs/:id` every 400ms.
 
 ### Step 2 — Ingest (Express)
 
-1. Reject non-images and files over 45 MB.
+1. Reject files that are neither images nor short clips, and files over 45 MB.
 2. Downscale the JPEG (long edge ~1280px).
 3. Compute **sha256** and a perceptual hash (pHash).
 4. If this exact (or near-duplicate) image already finished a **live** job, return that result instantly. Mock results are never cached.
@@ -166,84 +163,71 @@ Status: `ranking`.
 
 ---
 
-## Section 2 — Short video upload (functional on `origin/develop`, not matching-optimized)
+## Section 2 — Short video (same matching agent, different ingest)
 
-This is **Stage 3 ingest + the old Source/Rank**. Same job (`POST /api/identify`, poll `GET /jobs/:id`). Only capture and See change. After garments exist, it uses `sourceAndRank` — one Shopify query + title ranker — not SeeChip / VisualJudge / Browserbase-on-weak.
+A clip is a **new ingest**, not a second product. Same job (`POST /api/identify`, poll `GET /jobs/:id`). ffmpeg picks stills; then the Section 1 loop runs on those chips.
 
-Needs **ffmpeg/ffprobe** on the machine. Caps: **15 seconds**, **50 MB** at the AI service (Express upload limit is 45 MB), formats `.mp4` `.mov` `.webm` `.avi` `.mkv` `.m4v`. Perception timeout is 90s (`VIDEO_TIMEOUT_MS`).
+Needs **ffmpeg/ffprobe**. Caps: **15 seconds**, **50 MB** at the AI service (Express upload limit is 45 MB), formats `.mp4` `.mov` `.webm` `.m4v` `.mkv`. Ingest is ffmpeg-only (~30s). Visibility pick + multi-frame See share a 90s budget (`VIDEO_SEE_TIMEOUT_MS`). Combined ingest+see fallback is 90s (`VIDEO_TIMEOUT_MS`). Expo poll deadline is **270s** (`JOB_TIMEOUT_MS`).
 
-### Step 1 — Capture (Expo on `origin/develop`)
+### Step 1 — Capture (Expo)
 
 1. Library picker allows **images and videos** (`videoMaxDuration: 15`). Long-press camera does the same.
-2. `lib/api.ts` looks at mime/extension. Video goes in multipart field `video` with `type=video`. Photos still use field `image`.
-3. Same `POST /api/identify`. Scanning copy switches to “Analyzing video frames.”
-4. Polling is unchanged.
+2. `lib/api.ts` sends multipart field `video` with `type=video`. Photos still use field `image`.
+3. Scan title is “Analyzing video frames.” The subtitle follows **live** job status (`Pulling clear frames…` → SeeChip → shops → judge → maybe retry).
+4. As soon as ingest publishes `keyframes`, `ScanningCircle` flips through them.
 
-On **this local checkout**, the picker is still `mediaTypes: ['images']` and Express still returns 400 for non-images — pull `origin/develop` (or merge) to use the clip path.
+### Step 2 — API accepts the clip (Express or Cloudflare)
 
-### Step 2 — API accepts the clip (Express)
+1. Multer (or the Worker) reads fields `image`, `video`, or `file`.
+2. `isVideoUpload` or `type=video` sets `media_type: video`.
+3. sha256 of the **clip bytes** is the cache key (never pHash an MP4). Repeat uploads skip ffmpeg. Mock jobs are not cached.
 
-1. Multer reads fields `image`, `video`, or `file`.
-2. `isVideoUpload` (mp4 / quicktime / webm / m4v / mkv) or `type=video`.
-3. Job starts with `mediaType: 'video'`. No JPEG downscale / pHash cache (that is screenshot-only on the matching branch).
+Status: `ingesting`.
 
-Status: `ingesting`, then immediately `seeing`.
+### Step 3 — Ingest: turn the clip into a few stills
 
-### Step 3 — Ingest: turn the clip into a few stills (`video_processor.py`)
-
-Express calls FastAPI `POST /api/identify-video` (`perceiveVideo`). Combined ingest + crop. There is also `POST /tools/ingest` (frames + VLM, no chips).
+Express calls `POST /tools/ingest` (ffmpeg + visibility pick). Keyframes are written onto the job **before** See so the UI can breathe.
 
 **Tier 1 — local, cheap (ffmpeg + PIL):**
 
 1. **Validate** with ffprobe: duration 0.5–15s, size, codec.
 2. **Sample** at 4 fps as JPEGs.
-3. **Downscale** longest edge to 768px, then score sharpness (edge variance) and brightness.
-4. **Drop** blurry / near-black / near-white frames. If none survive, the job finishes empty: “Couldn't find a clear enough view of the outfit in this clip.” No junk frames are sent to the VLM.
-5. **Coverage windows:** split the clip into up to 5 equal time buckets; keep the sharpest *passing* frame per bucket so picks are spread out, not clustered on one sharp second.
+3. **Downscale** longest edge to 768px, then score sharpness and brightness.
+4. **Drop** blurry / near-black / near-white frames. If none survive, the job finishes empty: `empty_reason: ingest` — “No frame in this clip was clear enough.” Sentry `identify.exact_rate_zero` names `fail_stage=ingest`.
+5. **Coverage windows:** up to 5 time buckets; keep the sharpest passing frame per bucket.
 
-**Tier 1.5 — cheap Baseten pass (only if more than 3 candidates):**
+**Tier 1.5 — cheap Baseten pass during See (only if more than 3 candidates):**
 
-`select_best_video_frames` (low image detail) ranks which frames show the **outfit** best (facing camera, unobstructed, not UI overlay). Keep at most **3**. If this call fails, it keeps the first 3 vetted frames.
+`select_best_video_frames` (low image detail, `temperature=0` `seed=0`) keeps at most **3** outfit-readable frames. This runs in `seeing`, not inside the ffmpeg ingest budget.
 
-### Step 4 — See across frames (Baseten)
+On Cloudflare, the clip and those JPEG frames are stored in **R2**. KV still keys the finished result by clip sha256.
 
-**Tier 2 — expensive VLM:** `analyze_frames_with_vlm` with a **video** system prompt (temperature 0.1, not the matching-agent `0`/`seed=0`).
+### Step 4 — See across frames, then crop the right pixels
 
-1. Each kept frame is labeled `[Frame N @ Xs]` using the **original candidate index** (so later crops hit the right file).
-2. Model lists garments across frames and **merges duplicates**. `bbox` is relative to `source_frame_index`.
-3. Same honesty: `brand` null unless a logo is readable.
-4. FastAPI crops each garment from **that source frame** (not the full clip). Chips get `chip_key`. Keyframe JPEGs are returned as data-URLs for the job thumbnail.
+Status: `seeing`. `POST /tools/see` with `image_paths` + `frame_metadata`.
 
-Status stays `seeing` until garments are back. Confidence &lt; 0.5 dropped. Empty list → done, no shop search.
+1. Baseten merges garments across frames (`temperature=0` `seed=0`). `bbox` is relative to `source_frame_index`.
+2. PIL crops that source frame with 10% pad; whole-person boxes (≥85% coverage) skip the chip and go to text search.
+3. A second usable angle becomes `alt_chip_key`. SeeChip and VisualJudge use the sharper chip.
+4. Confidence &lt; 0.5 dropped. Frames but no clothes → `empty_reason: see` — “We couldn’t see a clear outfit.”
 
-### Step 5 — Source and rank (old loop, not Section 1)
+### Step 5 — Same matching loop as Section 1
 
-Status: `sourcing`, then `ranking`.
+Status: `detailing` → `sourcing` → `judging` → (`retrying`) → `ranking`.
 
-On `origin/develop` Express still:
-
-1. Logs “Shopify yes · Browserbase skipped · Composio skipped.”
-2. Per garment, **`sourceAndRank`** (combined tool): typically **one** catalog query + OpenAI rank from **titles**, not VisualJudge.
-3. If live search returns nothing, it can fall back to **mock** shop cards (the matching-agent branch stopped doing that).
-
-No detailing / judging / retrying statuses. No chip re-analysis. No product-photo compare. No Browserbase reverse-image when Shopify misses.
+`matchOutfit` is **not** forked. Video chips hit Shopify `like`, Composio only when the catalog is thin, Browserbase only when visual &lt; 0.62, and `exact` still needs visual ≥ 0.82 + `same_item` + category agree. Clips hit Browserbase more often; that is the intended Stage 3 story, not “browse every clip.”
 
 ### Step 6 — Return
 
-Same FitCards. Job may include `keyframes` and `thumbnail_url` from the first/best frame. Temp video file is deleted after identify-video returns.
+Same FitCards. Hero is the first keyframe; a **FRAMES WE USED** strip appears when there are several. Strong exact still wins over three weaks. Temp clip/work-dir files are deleted; persisted chips stay under `fit-stealer-chips` until cleanup.
 
-### Why this is “not optimized like screenshot”
-
-| | Screenshot matching agent (Section 1) | Video on `origin/develop` |
+| | Screenshot | Video |
 | --- | --- | --- |
-| Ingest | Downscale + hash + cache | ffmpeg → sharpness windows → 3 frames |
-| See | Scene, then **SeeChip** per crop | Multi-frame VLM merge, **one** pass |
-| Source | 2–3 Shopify queries + Composio if thin | One Shopify path |
-| Exact | VisualJudge + score gate ≥ 0.82 | Title ranker |
-| Retry | Reformulate, then Browserbase if weak | None |
-| Determinism | temperature 0, seed 0, stable ids | temperature 0.1, uuid garment ids |
-
-Video **is** a real upload path once you have `origin/develop` + ffmpeg + Baseten. It is still the pre-agent identifier: extra work is **which stills** to look at, not how products are judged. The intended merge is: clip → these keyframes → **then** the Section 1 matching loop.
+| Ingest | Downscale + sha256/pHash cache | ffmpeg → sharpness windows → ≤3 frames; sha256 of bytes |
+| See | Scene, then SeeChip per crop | Multi-frame merge, crop from `source_frame_index`, then SeeChip |
+| Source / exact / retry | Shared `matchOutfit` | Shared `matchOutfit` |
+| Empty | “We couldn’t see a clear outfit in this photo.” | Ingest miss vs See miss (different copy) |
+| Memory | KV / local hash | Same, clip sha256; Worker also stores frames in R2 |
 
 ---
 
@@ -258,6 +242,4 @@ Video **is** a real upload path once you have `origin/develop` + ffmpeg + Basete
 
 ## Mental model in one paragraph
 
-You upload a screenshot. Express hashes it (repeat uploads skip work). Baseten finds clothes in the scene, we crop each one, Baseten looks at the crop, Shopify (and maybe Composio) searches with those queries and the crop image, Baseten compares the crop to product photos, we only browse the open web when that compare is weak, OpenAI writes the cards, code forbids fake “exact,” Expo shows Found/Similar.
-
-On `origin/develop`, a short clip instead becomes a handful of clear frames, Baseten merges clothes across those frames, chips are cut from the best frame, then the **old** Shopify + title ranker fills the same cards. Those two halves are not merged in one checkout yet.
+You upload a screenshot or a short clip. Express (or the Cloudflare IdentifyAgent) hashes it so repeats skip work. A clip is turned into a few clear frames first. Baseten finds clothes, we crop each one from the right frame, Baseten looks at the crop, Shopify (and maybe Composio) searches with those queries and the crop image, Baseten compares the crop to product photos, we only browse the open web when that compare is weak, OpenAI writes the cards, code forbids fake “exact,” Expo shows Found/Similar and — on video — the frames we actually used.

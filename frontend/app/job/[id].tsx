@@ -6,7 +6,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { FitCard } from '../../components/FitCard';
 import { IdentifyStatusView } from '../../components/IdentifyStatus';
-import { getIdentifyJob, isVideoUri } from '../../lib/api';
+import { getIdentifyJob } from '../../lib/api';
+import {
+  emptyIdentifyCopy,
+  failedIdentifyCopy,
+  IDENTIFY_POLL_DEADLINE_MS,
+  isVideoJob,
+  timeoutIdentifyCopy,
+} from '../../lib/identifyCopy';
 import { preferStrongExact } from '../../lib/matches';
 import { getJobPreview } from '../../lib/resultStore';
 import { Sentry, withIdentifySpan } from '../../lib/sentry';
@@ -15,7 +22,6 @@ import { ACCENT_GRADIENT } from '../../lib/theme';
 
 const HERO_HEIGHT = 460;
 const POLL_MS = 400;
-const POLL_DEADLINE_MS = 210_000;
 
 function RevealOverlay() {
   const opacity = useRef(new Animated.Value(1)).current;
@@ -62,6 +68,7 @@ export default function JobScreen() {
   const preview = jobId ? getJobPreview(jobId) : null;
   const [result, setResult] = useState<IdentifyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [heroIndex, setHeroIndex] = useState(0);
   const didHaptic = useRef(false);
 
   useEffect(() => {
@@ -70,6 +77,7 @@ export default function JobScreen() {
 
     setResult(null);
     setError(null);
+    setHeroIndex(0);
 
     const poll = async () => {
       try {
@@ -106,12 +114,8 @@ export default function JobScreen() {
             if (job.status === 'done' || job.status === 'error') {
               return job;
             }
-            if (Date.now() - started > POLL_DEADLINE_MS) {
-              throw new Error(
-                job.media_type === 'video'
-                  ? 'This clip took too long to identify. Try another clip.'
-                  : 'This screenshot took too long to identify. Try another screenshot.',
-              );
+            if (Date.now() - started > IDENTIFY_POLL_DEADLINE_MS) {
+              throw new Error(timeoutIdentifyCopy(job.media_type === 'video' ? 'video' : 'image'));
             }
             await new Promise((resolve) => setTimeout(resolve, POLL_MS));
           }
@@ -138,10 +142,17 @@ export default function JobScreen() {
     }
   }, [result]);
 
-  const isVideo = isVideoUri(preview);
-  const thumbnail = result?.thumbnail_url || (isVideo ? null : preview);
+  const isVideo = isVideoJob(result, preview);
+  const keyframes = result?.keyframes?.filter(Boolean) || [];
+  const selectedFrame = keyframes[Math.min(heroIndex, Math.max(keyframes.length - 1, 0))];
+  const heroUri = selectedFrame || result?.thumbnail_url || (isVideo ? null : preview);
   const failed = Boolean(error) || result?.status === 'error';
-  const failMessage = error || result?.error || 'Something went wrong identifying this fit. Try another screenshot or clip.';
+  const failCopy = failedIdentifyCopy(
+    error || result?.error || 'Something went wrong identifying this fit. Try another screenshot or clip.',
+    result,
+    preview,
+  );
+  const emptyCopy = emptyIdentifyCopy(result, preview);
   const loading = !failed && (!result || (result.status !== 'done' && result.status !== 'error'));
   const empty = result?.status === 'done' && result.items.length === 0;
   const done = result?.status === 'done';
@@ -158,8 +169,8 @@ export default function JobScreen() {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.heroWrap}>
-          {thumbnail ? (
-            <Image source={{ uri: thumbnail }} style={styles.thumbnail} resizeMode="cover" />
+          {heroUri ? (
+            <Image source={{ uri: heroUri }} style={styles.thumbnail} resizeMode="cover" />
           ) : isVideo ? (
             <LinearGradient colors={['#1E1B2E', '#0A0A10']} style={[styles.thumbnail, styles.videoHeroCenter]}>
               <Ionicons name="videocam" size={44} color="#C4B5FD" />
@@ -174,23 +185,55 @@ export default function JobScreen() {
           </View>
         </View>
 
-        {loading && <IdentifyStatusView status={result?.status || 'queued'} />}
+        {keyframes.length > 1 ? (
+          <View style={styles.frameStrip}>
+            <Text style={styles.frameStripLabel}>FRAMES WE USED</Text>
+            <ScrollView
+              horizontal
+              nestedScrollEnabled
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.frameStripRow}
+            >
+              {keyframes.map((uri, index) => (
+                <Pressable
+                  key={`${uri}-${index}`}
+                  onPress={() => setHeroIndex(index)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Frame ${index + 1} of ${keyframes.length}`}
+                >
+                  <Image
+                    source={{ uri }}
+                    style={[styles.frameThumb, index === heroIndex && styles.frameThumbActive]}
+                  />
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+
+        {loading && (
+          <IdentifyStatusView
+            status={result?.status || 'queued'}
+            mediaType={isVideo ? 'video' : 'image'}
+            note={result?.steps?.[result.steps.length - 1]?.note}
+          />
+        )}
 
         {failed && (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>{failMessage}</Text>
-            <Text style={styles.emptySubtitle}>Try another screenshot with the outfit clearly visible.</Text>
+            <Text style={styles.emptyTitle}>{failCopy.title}</Text>
+            <Text style={styles.emptySubtitle}>{failCopy.subtitle}</Text>
           </View>
         )}
 
         {empty && (
           <View style={styles.emptyState}>
-            <Text style={styles.emptyTitle}>We couldn’t see a clear outfit in this photo.</Text>
-            <Text style={styles.emptySubtitle}>Try another screenshot with the outfit clearly visible.</Text>
+            <Text style={styles.emptyTitle}>{emptyCopy.title}</Text>
+            <Text style={styles.emptySubtitle}>{emptyCopy.subtitle}</Text>
           </View>
         )}
 
-        {done && result?.outfit_summary ? (
+        {done && !empty && result?.outfit_summary ? (
           <Text style={styles.summary}>{result.outfit_summary}</Text>
         ) : null}
 
@@ -254,6 +297,34 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1.5,
     color: '#C4B5FD',
+  },
+  frameStrip: {
+    paddingTop: 12,
+    paddingBottom: 4,
+    gap: 8,
+  },
+  frameStripLabel: {
+    marginHorizontal: 24,
+    color: '#9C9CFF',
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.4,
+  },
+  frameStripRow: {
+    paddingHorizontal: 24,
+    gap: 8,
+  },
+  frameThumb: {
+    width: 56,
+    height: 72,
+    borderRadius: 10,
+    backgroundColor: '#12121A',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
+  },
+  frameThumbActive: {
+    borderColor: '#C4B5FD',
+    borderWidth: 2,
   },
   heroTopScrim: {
     position: 'absolute',

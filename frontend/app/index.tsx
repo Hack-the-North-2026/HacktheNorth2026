@@ -5,7 +5,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import { startIdentifyJob, getIdentifyJob, isVideoUri } from '../lib/api';
+import { IDENTIFY_POLL_DEADLINE_MS, identifyStatusCopy, timeoutIdentifyCopy } from '../lib/identifyCopy';
 import { setJobPreview } from '../lib/resultStore';
+import { IdentifyStatus } from '../lib/types';
 import { CaptureButton } from '../components/CaptureButton';
 import { ScanningCircle } from '../components/ScanningCircle';
 import { SilhouetteFlash } from '../components/SilhouetteFlash';
@@ -15,7 +17,6 @@ import { BACKGROUND } from '../lib/theme';
 type Phase = 'idle' | 'scanning' | 'revealing';
 
 const POLL_MS = 400;
-const POLL_DEADLINE_MS = 210_000;
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -27,6 +28,9 @@ export default function HomeScreen() {
   const [circleOrigin, setCircleOrigin] = useState({ x: 0, y: 0 });
   const [jobDone, setJobDone] = useState(false);
   const [keyframes, setKeyframes] = useState<string[]>([]);
+  const [jobStatus, setJobStatus] = useState<IdentifyStatus>('queued');
+  const [statusNote, setStatusNote] = useState<string | undefined>(undefined);
+  const [mediaType, setMediaType] = useState<'image' | 'video'>('image');
   const jobIdRef = useRef<string | null>(null);
   const ringFinishedRef = useRef<(() => void) | null>(null);
 
@@ -48,6 +52,9 @@ export default function HomeScreen() {
   const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
     setUri(asset.uri);
     setKeyframes([]);
+    setJobStatus('queued');
+    setStatusNote(undefined);
+    setMediaType(isVideoUri(asset.uri, asset.mimeType) ? 'video' : 'image');
     setJobDone(false);
     setPhase('scanning');
     setIdleVisible(false);
@@ -55,21 +62,25 @@ export default function HomeScreen() {
       const job = await startIdentifyJob(asset);
       setJobPreview(job.job_id, asset.uri);
       jobIdRef.current = job.job_id;
+      setJobStatus(job.status);
+      if (job.media_type) setMediaType(job.media_type);
+      if (job.keyframes?.length) setKeyframes(job.keyframes);
 
       // Keep the circle up until the job is actually finished — starting the
       // job only means it was accepted, not that a result exists yet.
       const started = Date.now();
       let latest = job;
       while (latest.status !== 'done' && latest.status !== 'error') {
-        if (Date.now() - started > POLL_DEADLINE_MS) {
-          throw new Error(
-            isVideoUri(asset.uri, asset.mimeType)
-              ? 'This clip took too long to identify. Try another clip.'
-              : 'This screenshot took too long to identify. Try another screenshot.',
-          );
+        const kind = latest.media_type || (isVideoUri(asset.uri, asset.mimeType) ? 'video' : 'image');
+        if (Date.now() - started > IDENTIFY_POLL_DEADLINE_MS) {
+          throw new Error(timeoutIdentifyCopy(kind));
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         latest = await getIdentifyJob(job.job_id);
+        setJobStatus(latest.status);
+        const latestNote = latest.steps?.[latest.steps.length - 1]?.note;
+        if (latestNote) setStatusNote(latestNote);
+        if (latest.media_type) setMediaType(latest.media_type);
         if (latest.keyframes && latest.keyframes.length > 0) {
           setKeyframes(latest.keyframes);
         }
@@ -154,7 +165,7 @@ export default function HomeScreen() {
     }
   };
 
-  const isVideo = isVideoUri(uri);
+  const isVideo = mediaType === 'video' || isVideoUri(uri);
 
   return (
     <View style={styles.container}>
@@ -199,9 +210,7 @@ export default function HomeScreen() {
           </View>
         )}
         <Text style={styles.scanTitle}>{isVideo ? 'Analyzing video frames' : 'Identifying your fit'}</Text>
-        <Text style={styles.scanSubtitle}>
-          {isVideo ? 'Selecting clearest frames & matching items' : 'Matching the pieces to real listings'}
-        </Text>
+        <Text style={styles.scanSubtitle}>{identifyStatusCopy(jobStatus, isVideo ? 'video' : 'image', statusNote)}</Text>
       </Animated.View>
 
       <RippleTransition

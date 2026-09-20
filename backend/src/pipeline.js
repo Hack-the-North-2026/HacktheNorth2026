@@ -9,9 +9,9 @@ import {
   releaseUpload,
   scrubChipKeys,
 } from './cleanup.js';
-import { attachClipHash, downscaleUpload } from './downscale.js';
+import { attachClipHash, clipCacheKey, downscaleUpload } from './downscale.js';
 import { getCachedIdentify, setCachedIdentify } from './identifyCache.js';
-import { createJob, updateJob } from './jobs.js';
+import { createJob, publishJobKeyframes, updateJob } from './jobs.js';
 import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
 import { canonicalizeQuery } from './queryCanonicalize.js';
 import { Sentry } from './sentry.js';
@@ -37,7 +37,7 @@ const IMAGE_EXT = /\.(jpe?g|png|webp|heic|heif|gif)$/i;
 const VIDEO_MIME = /^video\/(mp4|quicktime|webm|x-m4v|x-matroska)$/i;
 const VIDEO_EXT = /\.(mp4|mov|webm|m4v|mkv)$/i;
 const ALLOWED_MATCH = new Set(['exact', 'similar']);
-const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 210_000);
+const JOB_TIMEOUT_MS = Number(process.env.JOB_TIMEOUT_MS || 270_000);
 
 export function isImageUpload(file) {
   if (!file) return false;
@@ -162,7 +162,7 @@ function matchingFields(garments, extra = {}) {
 }
 
 function cachedIdentifyPayload(perceived, items, extra = {}) {
-  const keyframes = perceived?.keyframes || extra.keyframes || [];
+  const keyframes = extra.keyframes || [];
   return {
     outfit_summary: perceived?.outfit_summary || extra.outfit_summary || '',
     items: items || [],
@@ -171,12 +171,22 @@ function cachedIdentifyPayload(perceived, items, extra = {}) {
     frame_count: extra.frame_count ?? perceived?.frame_count ?? 0,
     selected_frames: extra.selected_frames ?? perceived?.selected_frames ?? 0,
     clip_duration: extra.clip_duration ?? perceived?.duration ?? null,
+    empty_reason: extra.empty_reason || perceived?.empty_reason,
   };
 }
 
 function cacheIdentifyResult(imageHash, phash, mocks, usedMock, payload) {
   if (!imageHash || usedMock || mocks.size > 0) return;
+  if (!payload?.items?.length) return;
   setCachedIdentify(imageHash, payload, phash);
+  const durationKey = clipCacheKey(imageHash, payload.clip_duration);
+  if (durationKey && durationKey !== imageHash) {
+    setCachedIdentify(durationKey, payload, phash);
+  }
+}
+
+function publicKeyframes(jobId, keyframes) {
+  return publishJobKeyframes(jobId, keyframes);
 }
 
 function commit(jobId, ctx, patch) {
@@ -201,6 +211,7 @@ export function startIdentifyJob({ origin = 'app', file, deviceId, type, deps = 
     status: 'queued',
     origin: jobOrigin,
     media_type: mediaType,
+    device_id: sanitizeDeviceId(deviceId),
     items: [],
   });
 
@@ -249,6 +260,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
   let frameCount = 0;
   let selectedFrames = 0;
   let clipDuration = null;
+  let emptyReason;
+  let cachedKeyframes = [];
 
   return Sentry.startSpan(
     { name: 'identify', op: 'identify', attributes: { job_id: jobId, origin, media_type: mediaType } },
@@ -306,13 +319,15 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         clothes: cached.items?.length || 0,
       });
       // #endregion
+      const keyframes = publicKeyframes(jobId, cached.keyframes || []);
       commit(jobId, ctx, {
         status: 'done',
         outfit_summary: cached.outfit_summary || '',
         items: cached.items || [],
         steps: ctx.steps,
-        keyframes: cached.keyframes || [],
-        thumbnail_url: cached.thumbnail_url || cached.keyframes?.[0] || undefined,
+        keyframes,
+        thumbnail_url: keyframes[0] || undefined,
+        empty_reason: cached.empty_reason,
       });
       return;
     }
@@ -335,9 +350,14 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
             const seeStarted = Date.now();
             perceived = await perceiveVideoFn(file, jobId);
             seeMs = Date.now() - seeStarted;
+            emptyReason = perceived?.empty_reason || emptyReason;
             frameCount = Number(perceived?.frame_count || 0);
             selectedFrames = Number(perceived?.selected_frames || perceived?.keyframes?.length || 0);
             clipDuration = Number.isFinite(Number(perceived?.duration)) ? Number(perceived.duration) : clipDuration;
+            cachedKeyframes = perceived?.keyframes || [];
+            if (perceived?.keyframes?.length) {
+              perceived.keyframes = publicKeyframes(jobId, perceived.keyframes);
+            }
           } else {
             throw ingestError;
           }
@@ -348,7 +368,10 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
           selectedFrames = Number(ingested?.selected_frames || ingested?.image_paths?.length || 0);
           clipDuration = Number.isFinite(Number(ingested?.duration)) ? Number(ingested.duration) : clipDuration;
           temps.push(...collectTempPaths(ingested || {}));
-          const keyframes = ingested?.keyframes || [];
+          const rawKeyframes = ingested?.keyframes || [];
+          cachedKeyframes = rawKeyframes;
+          const keyframes = publicKeyframes(jobId, rawKeyframes);
+          if (ingested) ingested.keyframes = keyframes;
           commit(jobId, ctx, {
             keyframes,
             thumbnail_url: keyframes[0] || undefined,
@@ -372,6 +395,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
             image_hash: imageHash,
           });
           if (!ingested?.image_paths?.length) {
+            emptyReason = 'ingest';
             perceived = {
               garments: [],
               outfit_summary: ingested?.outfit_summary || "Couldn't find a clear enough view of the outfit in this clip.",
@@ -379,6 +403,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
               frame_count: frameCount,
               selected_frames: selectedFrames,
               duration: clipDuration,
+              empty_reason: 'ingest',
             };
           } else {
             step(jobId, ctx, 'seeing', 'reading the outfit across frames', {
@@ -429,11 +454,15 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
 
     if (garments.length === 0) {
       logger.info(jobMsg(jobId, `done — no clothes found in this ${mediaType}`));
+      const resolvedEmpty = emptyReason || (mediaType === 'video' ? 'see' : undefined);
+      const failStage = diagnoseFailStage([], { empty_reason: resolvedEmpty, media_type: mediaType });
       Sentry.logger.info('identify.done', {
         job_id: jobId,
         origin,
+        media_type: mediaType,
         garment_count: 0,
         shopify_hits: 0,
+        fail_stage: failStage,
         ...matchingFields([], {
           image_hash: imageHash,
           phash,
@@ -444,6 +473,16 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
           clip_duration: clipDuration ?? perceived?.duration ?? null,
         }),
       });
+      if (failStage === 'ingest') {
+        Sentry.logger.warn('identify.exact_rate_zero', {
+          job_id: jobId,
+          origin,
+          media_type: mediaType,
+          fail_stage: 'ingest',
+          frame_count: frameCount || perceived?.frame_count || 0,
+          selected_frames: selectedFrames || perceived?.selected_frames || 0,
+        });
+      }
       // #region agent log
       agentLog('A', 'pipeline.js:empty', 'no garments after confidence filter', {
         jobId,
@@ -457,6 +496,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         items: [],
         keyframes: perceived?.keyframes || [],
         thumbnail_url: perceived?.keyframes?.[0] || undefined,
+        empty_reason: emptyReason || 'see',
       });
       cacheIdentifyResult(
         imageHash,
@@ -464,9 +504,11 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         mocks,
         false,
         cachedIdentifyPayload(perceived, [], {
+          keyframes: cachedKeyframes,
           frame_count: frameCount || perceived?.frame_count || 0,
           selected_frames: selectedFrames || perceived?.selected_frames || 0,
           clip_duration: clipDuration ?? perceived?.duration ?? null,
+          empty_reason: emptyReason || 'see',
         }),
       );
       return;
@@ -534,6 +576,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         items: [],
         keyframes: perceived?.keyframes || [],
         thumbnail_url: perceived?.keyframes?.[0] || undefined,
+        empty_reason: emptyReason || 'see',
       });
       cacheIdentifyResult(
         imageHash,
@@ -541,9 +584,11 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         mocks,
         false,
         cachedIdentifyPayload(perceived, [], {
+          keyframes: cachedKeyframes,
           frame_count: frameCount || perceived?.frame_count || 0,
           selected_frames: selectedFrames || perceived?.selected_frames || 0,
           clip_duration: clipDuration ?? perceived?.duration ?? null,
+          empty_reason: emptyReason || 'see',
         }),
       );
       return;
@@ -608,6 +653,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     Sentry.logger.info('identify.done', {
       job_id: jobId,
       origin,
+      media_type: mediaType,
       garment_count: ranked.length,
       shopify_hits: matchCount,
       ...doneFields,
@@ -616,6 +662,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       Sentry.logger.warn('identify.exact_rate_zero', {
         job_id: jobId,
         origin,
+        media_type: mediaType,
         fail_stage: failStage,
         ...doneFields,
       });
@@ -672,6 +719,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       mocks,
       usedMock,
       cachedIdentifyPayload(perceived, items, {
+        keyframes: cachedKeyframes,
         frame_count: frameCount || perceived?.frame_count || 0,
         selected_frames: selectedFrames || perceived?.selected_frames || 0,
         clip_duration: clipDuration ?? perceived?.duration ?? null,

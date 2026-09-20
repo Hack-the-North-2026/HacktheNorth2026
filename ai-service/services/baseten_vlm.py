@@ -33,6 +33,7 @@ logger = logging.getLogger("fit_stealer.see")
 
 MIN_CONFIDENCE = 0.5
 BBOX_BINS = 20
+KEEP_FOR_IDENTIFICATION = 3
 
 # ---------------------------------------------------------------------------
 # Garment JSON Schema (strict: true)
@@ -415,6 +416,26 @@ def analyze_frames_with_vlm(
         raise ValueError("image_paths must not be empty")
 
     is_video = frame_metadata is not None and len(frame_metadata) > 0
+    if is_video and len(image_paths) > KEEP_FOR_IDENTIFICATION:
+        metadata = list(frame_metadata or [])
+        try:
+            selected_idx, reasons = select_best_video_frames(
+                image_paths, metadata, keep=KEEP_FOR_IDENTIFICATION,
+            )
+        except Exception:
+            logger.exception("see — visibility selection failed, using first vetted frames")
+            selected_idx, reasons = [], {}
+        if not selected_idx:
+            selected_idx = list(range(KEEP_FOR_IDENTIFICATION))
+        for index in selected_idx:
+            logger.info(
+                "see — kept frame %s @ %ss: %s",
+                metadata[index].get("index", index) if index < len(metadata) else index,
+                metadata[index].get("timestamp", 0) if index < len(metadata) else 0,
+                reasons.get(index, "(no reason given)"),
+            )
+        image_paths = [image_paths[i] for i in selected_idx]
+        frame_metadata = [metadata[i] if i < len(metadata) else {"index": i} for i in selected_idx]
 
     logger.info(
         "see — calling Baseten (%s) with %s %s%s",

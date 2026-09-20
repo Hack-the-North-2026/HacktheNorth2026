@@ -96,6 +96,28 @@ class IdentifyVideoV0Tests(unittest.TestCase):
         detail.assert_not_called()
         crop.assert_called_once()
 
+    @patch("main.cleanup_work_dir")
+    @patch("main.crop_video_garments")
+    @patch("main.select_and_identify_from_video")
+    def test_identify_video_empty_ingest_sets_reason(self, ingest, crop, cleanup):
+        ingest.return_value = {
+            "garments": [],
+            "outfit_summary": "Couldn't find a clear enough view of the outfit in this clip.",
+            "frame_count": 0,
+            "selected_frames": 0,
+            "candidate_dir": "",
+            "keyframes": [],
+            "frames": [],
+            "image_paths": [],
+        }
+        crop.return_value = []
+        response = TestClient(app).post(
+            "/api/identify-video?detail=0",
+            files={"video": ("clip.mp4", b"fake-mp4-bytes", "video/mp4")},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["empty_reason"], "ingest")
+
 
 if __name__ == "__main__":
     unittest.main()

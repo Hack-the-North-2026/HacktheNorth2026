@@ -105,6 +105,35 @@ class IngestV1Tests(unittest.TestCase):
         crop.assert_called_once()
         detail.assert_not_called()
 
+    @patch("main.detail_garments")
+    @patch("main.crop_video_garments")
+    @patch("main.analyze_frames_with_vlm")
+    def test_see_accepts_frame_bytes_without_disk_paths(self, analyze, crop, detail):
+        dest = Path(tempfile.gettempdir()) / "fit-stealer-chips"
+        dest.mkdir(parents=True, exist_ok=True)
+        analyze.return_value = {"garments": [dict(GARMENT)], "outfit_summary": "leather"}
+        crop.return_value = [{**GARMENT, "chip_key": str(dest / "jacket.jpg")}]
+        import base64
+        from io import BytesIO
+        buffer = BytesIO()
+        Image.new("RGB", (24, 24), (40, 50, 60)).save(buffer, "JPEG")
+        response = TestClient(app).post(
+            "/tools/see",
+            json={
+                "image_paths": [],
+                "frames": [{
+                    "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
+                    "index": 2,
+                    "timestamp": 1.1,
+                    "sharpness": 70,
+                }],
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        analyze.assert_called_once()
+        crop.assert_called_once()
+        detail.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

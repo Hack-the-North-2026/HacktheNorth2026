@@ -147,7 +147,7 @@ async function runMatchLoop(garments, jobId, step, tools) {
             return;
           }
           item.candidates = mergeBrowse(item.candidates, browsed);
-          const again = await tools.judge(item.garment, item.candidates, jobId);
+          const again = await tools.judge(browseGarment, item.candidates, jobId);
           item.visual_scores = again.visual_scores || [];
           item.best = again.best ?? item.best;
           logger.info(

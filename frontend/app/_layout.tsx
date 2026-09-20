@@ -1,5 +1,6 @@
 import { Sentry } from '../lib/sentry';
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import { router, Stack } from 'expo-router';
 import Constants from 'expo-constants';
 import type * as NotificationsType from 'expo-notifications';
@@ -22,7 +23,7 @@ function openNotificationResult(notification: NotificationsType.Notification) {
 
 function RootLayout() {
   useEffect(() => {
-    if (isExpoGo) return;
+    if (isExpoGo || Platform.OS === 'web') return;
     let subscription: { remove: () => void } | undefined;
 
     (async () => {

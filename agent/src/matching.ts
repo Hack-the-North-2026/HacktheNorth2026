@@ -88,6 +88,12 @@ export function scrubChipKeys(
   });
 }
 
+export function withAltChip<T extends { chip_key?: unknown; alt_chip_key?: unknown }>(garment: T): T {
+  const alt = garment?.alt_chip_key;
+  if (!alt || typeof alt !== "string") return garment;
+  return { ...garment, chip_key: alt };
+}
+
 export function cacheKey(imageHash: string): string {
   return `sha256:${imageHash}`;
 }
