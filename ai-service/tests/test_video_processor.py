@@ -30,6 +30,7 @@ from services.video_processor import (
     _compute_sharpness,
     _downscale_frame,
     extract_candidate_frames,
+    ffmpeg_available,
     validate_video,
     MAX_DURATION_S,
     ALLOWED_VIDEO_EXTENSIONS,
@@ -74,10 +75,15 @@ def bright_image():
 def _has_ffmpeg():
     """Check if ffmpeg is available on the system."""
     try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
-        return True
+        ffmpeg = subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=5)
+        ffprobe = subprocess.run(["ffprobe", "-version"], capture_output=True, timeout=5)
+        return ffmpeg.returncode == 0 and ffprobe.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return False
+
+
+def test_ffmpeg_available_matches_binaries_on_path():
+    assert ffmpeg_available() is _has_ffmpeg()
 
 
 def _make_test_video(output_path: str, duration: float = 3.0, fps: int = 10):

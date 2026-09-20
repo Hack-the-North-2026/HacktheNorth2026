@@ -3,7 +3,7 @@ Fit Stealer — AI Service (FastAPI)
 Perception + matching tool server.
 
 Endpoints:
-  POST /tools/see         — Baseten VLM → Garment[]
+  POST /tools/see         — Baseten VLM → Garment[] (image upload or video-frames JSON)
   POST /tools/crop        — PIL bbox cropper → chip files
   POST /tools/see-chip    — Baseten close-up + OpenAI query merge
   POST /tools/retrieve    — Shopify fan-out (+ Composio if thin)
@@ -12,6 +12,7 @@ Endpoints:
   POST /tools/rank        — OpenAI honesty ranker
   POST /tools/source-rank — Combined retrieve → judge → maybe browse → rank
   POST /api/identify      — See + crop (+ SeeChip unless detail=0)
+  POST /api/identify-video — Video ingest + crop only (Express owns SeeChip)
   GET  /health            — Liveness probe
 
 Architecture §7.2: This is a TOOL SERVER, not the product API.
@@ -53,6 +54,10 @@ from services.source_and_rank import source_and_rank  # noqa: E402
 from services.video_processor import (  # noqa: E402
     cleanup_work_dir,
     extract_candidate_frames,
+    ffmpeg_available,
+    ingest_video_frames,
+    keyframes_from_paths,
+    persist_selected_frames,
     select_and_identify_from_video,
     validate_video,
     ALLOWED_VIDEO_EXTENSIONS,
@@ -169,7 +174,12 @@ class CropResponse(BaseModel):
 class SeeResponse(BaseModel):
     garments: list[dict]
     outfit_summary: str
-    image_path: str
+    image_path: str = ""
+
+
+class SeeFramesRequest(BaseModel):
+    image_paths: list[str]
+    frame_metadata: list[dict] = []
 
 
 class IdentifyResponse(BaseModel):
@@ -192,11 +202,22 @@ class SourceRankResponse(BaseModel):
     matches: list[dict]
 
 
+class IngestFrame(BaseModel):
+    path: str
+    timestamp: float = 0
+    sharpness: float = 0
+    index: int = 0
+
+
 class IngestResponse(BaseModel):
-    garments: list[dict]
-    outfit_summary: str
+    garments: list[dict] = []
+    outfit_summary: str = ""
     frame_count: int
     selected_frames: int
+    image_paths: list[str] = []
+    frames: list[IngestFrame] = []
+    keyframes: list[str] = []
+    work_dir: Optional[str] = None
 
 
 class IdentifyVideoResponse(BaseModel):
@@ -280,6 +301,7 @@ def health_check():
         "service": "Fit Stealer AI Service",
         "version": "0.3.0",
         "sentry": "ok" if _sentry_dsn else "unconfigured",
+        "ffmpeg": "ok" if ffmpeg_available() else "missing",
         "endpoints": [
             "/tools/see",
             "/tools/crop",
@@ -320,22 +342,100 @@ def _find_image_file(target: str) -> Path | None:
     return None
 
 
+def _crop_video_garments(garments: list[dict], frames: list[dict]) -> list[dict]:
+    """Crop each garment from the frame named by source_frame_index."""
+    if not garments or not frames:
+        return garments
+    by_index = {}
+    for frame in frames:
+        try:
+            by_index[int(frame.get("index"))] = str(frame.get("path") or "")
+        except (TypeError, ValueError):
+            continue
+    fallback = str(frames[0].get("path") or "") if frames else ""
+    for garment in garments:
+        src = garment.get("source_frame_index")
+        frame_path = by_index.get(src) if isinstance(src, int) else None
+        if not frame_path and isinstance(src, int) and 0 <= src < len(frames):
+            frame_path = str(frames[src].get("path") or "")
+        if not frame_path:
+            frame_path = fallback
+        managed = managed_media_path(frame_path)
+        if managed is None:
+            logger.debug("crop — skip garment %s, no managed source frame", garment.get("id"))
+            continue
+        try:
+            cropped = crop_garments(str(managed), [garment], str(_CHIPS_DIR))
+            if cropped:
+                garment.update(cropped[0])
+        except Exception:
+            logger.debug("crop — failed for garment %s", garment.get("id"))
+    return garments
+
+
+def _see_video_frames(image_paths: list[str], frame_metadata: list[dict]) -> SeeResponse:
+    frames = []
+    resolved_paths = []
+    for i, raw in enumerate(image_paths):
+        managed = managed_media_path(raw)
+        if managed is None:
+            raise HTTPException(
+                status_code=400,
+                detail="image_paths must be Fit Stealer frame files on this server",
+            )
+        path = str(managed)
+        resolved_paths.append(path)
+        meta = frame_metadata[i] if i < len(frame_metadata) else {}
+        frames.append({
+            "path": path,
+            "timestamp": meta.get("timestamp", 0),
+            "sharpness": meta.get("sharpness", 0),
+            "index": meta.get("index", i),
+        })
+
+    try:
+        result = analyze_frames_with_vlm(resolved_paths, frame_metadata=frames)
+    except ValueError as e:
+        logger.warning("see — bad request: %s", e)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.exception("see — Baseten failed")
+        raise HTTPException(status_code=502, detail=f"Baseten error: {e}")
+
+    garments = _crop_video_garments(result.get("garments", []), frames)
+    return SeeResponse(
+        garments=garments,
+        outfit_summary=result.get("outfit_summary", ""),
+        image_path=resolved_paths[0] if resolved_paths else "",
+    )
+
+
 @app.post("/tools/see", response_model=SeeResponse)
-async def tools_see(
-    image: Optional[UploadFile] = File(default=None),
-):
+async def tools_see(request: Request):
     """
-    See step — send one image to Baseten VLM, get back Garment[].
+    See step — Baseten VLM → Garment[].
 
     Accepts:
-      - multipart/form-data with field `image` (preferred, from Dev 2)
+      - multipart/form-data with field `image` (screenshot)
+      - application/json { image_paths, frame_metadata } (video frames from /tools/ingest)
       - Falls back to TEST_IMAGE_PATH env var for Phase 1 local testing
-
-    Returns:
-      { garments: [...], outfit_summary: "..." }
     """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" in content_type:
+        payload = SeeFramesRequest.model_validate(await request.json())
+        if not payload.image_paths:
+            raise HTTPException(status_code=400, detail="image_paths is required")
+        return _see_video_frames(payload.image_paths, payload.frame_metadata)
+
+    image = None
+    if "multipart/form-data" in content_type or "application/x-www-form-urlencoded" in content_type:
+        form = await request.form()
+        uploaded = form.get("image")
+        if uploaded is not None and hasattr(uploaded, "read"):
+            image = uploaded
+
     if image is not None:
-        suffix = Path(image.filename or "upload.jpg").suffix or ".jpg"
+        suffix = Path(getattr(image, "filename", None) or "upload.jpg").suffix or ".jpg"
         file_id = str(uuid.uuid4())
         if not job_id_var.get():
             bind_job(file_id)
@@ -596,13 +696,16 @@ async def tools_ingest(
     video: UploadFile = File(...),
 ):
     """
-    Ingest step (Stage 3) — extract keyframes from video, run VLM.
+    Ingest step (Stage V1) — ffmpeg + visibility pick. No VLM garments.
+
+    Copies kept frames into fit-stealer-chips, then deletes the work dir.
+    Express calls /tools/see with those paths during `seeing`.
 
     Accepts:
       multipart/form-data with field `video` (.mp4, .mov, .webm)
 
     Returns:
-      { garments: Garment[], outfit_summary: str, frame_count: int, selected_frames: int }
+      { frame_count, selected_frames, image_paths, frames, keyframes }
     """
     suffix = Path(video.filename or "upload.mp4").suffix.lower() or ".mp4"
     if suffix not in ALLOWED_VIDEO_EXTENSIONS:
@@ -627,8 +730,22 @@ async def tools_ingest(
     video_path.write_bytes(content)
     logger.info("ingest — saved uploaded video (%s, %.1f MB)", suffix, len(content) / 1024 / 1024)
 
+    work_dir = ""
     try:
-        result = select_and_identify_from_video(str(video_path))
+        result = ingest_video_frames(str(video_path))
+        work_dir = result.get("candidate_dir", "")
+        frames = persist_selected_frames(result.get("frames") or [], str(_CHIPS_DIR), file_id)
+        image_paths = [frame["path"] for frame in frames]
+
+        return IngestResponse(
+            garments=[],
+            outfit_summary=result.get("outfit_summary", ""),
+            frame_count=result.get("frame_count", 0),
+            selected_frames=len(frames),
+            image_paths=image_paths,
+            frames=frames,
+            keyframes=keyframes_from_paths(image_paths) or result.get("keyframes") or [],
+        )
     except ValueError as e:
         logger.warning("ingest — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
@@ -639,23 +756,12 @@ async def tools_ingest(
         logger.exception("ingest — failed")
         raise HTTPException(status_code=502, detail=f"Video processing error: {e}")
     finally:
-        # Clean up uploaded video
         try:
             video_path.unlink(missing_ok=True)
         except OSError:
             pass
-
-    # Clean up working directory
-    work_dir = result.get("candidate_dir", "")
-    if work_dir:
-        cleanup_work_dir(work_dir)
-
-    return IngestResponse(
-        garments=result.get("garments", []),
-        outfit_summary=result.get("outfit_summary", ""),
-        frame_count=result.get("frame_count", 0),
-        selected_frames=result.get("selected_frames", 0),
-    )
+        if work_dir:
+            cleanup_work_dir(work_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -667,9 +773,13 @@ async def tools_ingest(
 @app.post("/api/identify-video", response_model=IdentifyVideoResponse)
 async def api_identify_video(
     video: UploadFile = File(...),
+    detail: bool = Query(False),
 ):
     """
     Stage 3 convenience — video ingest + crop in one call.
+
+    Express owns SeeChip (`POST /tools/see-chip`) so this never calls
+    `detail_garments`, even if `detail=1` is passed. `detail=0` is the contract.
 
     Accepts:
       multipart/form-data with field `video`
@@ -677,6 +787,8 @@ async def api_identify_video(
     Returns:
       { garments: Garment[] (with chip_key), outfit_summary: str, frame_count: int }
     """
+    if detail:
+        logger.warning("identify-video — detail=1 ignored; Express owns SeeChip")
     suffix = Path(video.filename or "upload.mp4").suffix.lower() or ".mp4"
     if suffix not in ALLOWED_VIDEO_EXTENSIONS:
         raise HTTPException(
@@ -706,32 +818,17 @@ async def api_identify_video(
         garments = result.get("garments", [])
         outfit_summary = result.get("outfit_summary", "")
         frame_count = result.get("frame_count", 0)
-
-        # Crop chips from the best source frame for each garment
-        representative_frame = None
-        if work_dir:
-            candidate_dir = os.path.join(work_dir, "candidates")
-            candidate_files = sorted(Path(candidate_dir).glob("candidate_*.jpg"))
-            if candidate_files:
-                representative_frame = candidate_files[0]
-            for g in garments:
-                src_idx = g.get("source_frame_index")
-                if src_idx is not None and 0 <= src_idx < len(candidate_files):
-                    frame_path = str(candidate_files[src_idx])
-                    if representative_frame is None or representative_frame == candidate_files[0]:
-                        representative_frame = candidate_files[src_idx]
-                    try:
-                        cropped = crop_garments(frame_path, [g], str(_CHIPS_DIR))
-                        if cropped:
-                            g.update(cropped[0])
-                    except Exception:
-                        logger.debug("crop — failed for garment %s", g.get("id"))
+        frames = persist_selected_frames(result.get("frames") or [], str(_CHIPS_DIR), file_id)
+        garments = _crop_video_garments(garments, frames)
+        result["keyframes"] = keyframes_from_paths([frame["path"] for frame in frames]) or result.get("keyframes", [])
 
         image_path = None
-        if representative_frame and representative_frame.exists():
-            thumb_dest = _CHIPS_DIR / f"thumb_{file_id}.jpg"
-            thumb_dest.write_bytes(representative_frame.read_bytes())
-            image_path = str(thumb_dest)
+        if frames:
+            thumb_src = Path(frames[0]["path"])
+            if thumb_src.exists():
+                thumb_dest = _CHIPS_DIR / f"thumb_{file_id}.jpg"
+                thumb_dest.write_bytes(thumb_src.read_bytes())
+                image_path = str(thumb_dest)
     except ValueError as e:
         logger.warning("identify-video — bad request: %s", e)
         raise HTTPException(status_code=400, detail=str(e))

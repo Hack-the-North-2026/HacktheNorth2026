@@ -16,7 +16,7 @@ import { persistRecentSearch, sanitizeDeviceId } from './recentSearches.js';
 import { canonicalizeQuery } from './queryCanonicalize.js';
 import { Sentry } from './sentry.js';
 import { agentLog, jobMsg, logger } from './logger.js';
-import { perceive, perceiveVideo, resolveSourceMode, seeChips } from './tools.js';
+import { ingestVideo, perceive, perceiveVideo, resolveSourceMode, seeChips, seeVideoFrames } from './tools.js';
 import { matchOutfit } from './matchingLoop.js';
 import { diagnoseFailStage, exactCount, preferStrongExact, seechipQueryCount } from './matchDisplay.js';
 
@@ -173,13 +173,14 @@ function step(jobId, ctx, status, note, extra = {}) {
   return commit(jobId, ctx, { status, steps: ctx.steps, ...extra });
 }
 
-export function startIdentifyJob({ origin = 'app', file, deviceId, type } = {}) {
+export function startIdentifyJob({ origin = 'app', file, deviceId, type, deps = {} } = {}) {
   const jobOrigin = ALLOWED_ORIGINS.has(origin) ? origin : 'app';
   const mediaType = type === 'video' || isVideoUpload(file) ? 'video' : 'image';
   const job = createJob({
     job_id: randomUUID(),
     status: 'queued',
     origin: jobOrigin,
+    media_type: mediaType,
     items: [],
   });
 
@@ -194,7 +195,7 @@ export function startIdentifyJob({ origin = 'app', file, deviceId, type } = {}) 
   }, JOB_TIMEOUT_MS);
   limit.unref();
 
-  void runPipeline(job.job_id, file, ctx, jobOrigin, mediaType)
+  void runPipeline(job.job_id, file, ctx, jobOrigin, mediaType, deps)
     .catch((error) => {
       logger.error(jobMsg(job.job_id, 'pipeline failed'), error);
       Sentry.captureException(error);
@@ -213,9 +214,20 @@ export function startIdentifyJob({ origin = 'app', file, deviceId, type } = {}) 
   return job;
 }
 
-async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image') {
+async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image', deps = {}) {
+  const perceiveFn = deps.perceive || perceive;
+  const perceiveVideoFn = deps.perceiveVideo || perceiveVideo;
+  const ingestVideoFn = deps.ingestVideo || ingestVideo;
+  const seeVideoFramesFn = deps.seeVideoFrames || seeVideoFrames;
+  const seeChipsFn = deps.seeChips || seeChips;
+  const matchOutfitFn = deps.matchOutfit || matchOutfit;
+  const resolveSourceModeFn = deps.resolveSourceMode || resolveSourceMode;
   const mocks = parseMockFlags();
   const temps = [];
+  let ingestMs = null;
+  let seeMs = null;
+  let frameCount = 0;
+  let selectedFrames = 0;
 
   return Sentry.startSpan(
     { name: 'identify', op: 'identify', attributes: { job_id: jobId, origin, media_type: mediaType } },
@@ -276,17 +288,94 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       });
       return;
     }
-    step(jobId, ctx, 'seeing', 'looking at the outfit');
-
     let perceived;
     try {
       if (mocks.has('see')) {
+        step(jobId, ctx, 'seeing', 'looking at the outfit');
         logger.warn(jobMsg(jobId, 'see — using mock clothes (IDENTIFY_MOCK=see)'));
         perceived = mockSeeResult();
       } else if (mediaType === 'video') {
-        perceived = await perceiveVideo(file, jobId);
+        step(jobId, ctx, 'ingesting', 'pulling clear frames');
+        const ingestStarted = Date.now();
+        let ingested;
+        try {
+          ingested = await ingestVideoFn(file, jobId);
+        } catch (ingestError) {
+          if (ingestError.status === 404) {
+            logger.warn(jobMsg(jobId, 'ingest — /tools/ingest missing, using identify-video'));
+            step(jobId, ctx, 'seeing', 'reading the outfit across frames');
+            const seeStarted = Date.now();
+            perceived = await perceiveVideoFn(file, jobId);
+            seeMs = Date.now() - seeStarted;
+            frameCount = Number(perceived?.frame_count || 0);
+            selectedFrames = Number(perceived?.selected_frames || perceived?.keyframes?.length || 0);
+          } else {
+            throw ingestError;
+          }
+        }
+        if (!perceived) {
+          ingestMs = Date.now() - ingestStarted;
+          frameCount = Number(ingested?.frame_count || 0);
+          selectedFrames = Number(ingested?.selected_frames || ingested?.image_paths?.length || 0);
+          temps.push(...collectTempPaths(ingested || {}));
+          const keyframes = ingested?.keyframes || [];
+          commit(jobId, ctx, {
+            keyframes,
+            thumbnail_url: keyframes[0] || undefined,
+          });
+          try {
+            const span = Sentry.getActiveSpan();
+            span?.setAttribute('frame_count', frameCount);
+            span?.setAttribute('selected_frames', selectedFrames);
+            span?.setAttribute('ingest_ms', ingestMs);
+          } catch {
+            // Tracing attributes are optional.
+          }
+          Sentry.logger.info('identify.ingest', {
+            job_id: jobId,
+            origin,
+            media_type: mediaType,
+            frame_count: frameCount,
+            selected_frames: selectedFrames,
+            ingest_ms: ingestMs,
+          });
+          if (!ingested?.image_paths?.length) {
+            perceived = {
+              garments: [],
+              outfit_summary: ingested?.outfit_summary || "Couldn't find a clear enough view of the outfit in this clip.",
+              keyframes,
+              frame_count: frameCount,
+              selected_frames: selectedFrames,
+            };
+          } else {
+            step(jobId, ctx, 'seeing', 'reading the outfit across frames', {
+              keyframes,
+              thumbnail_url: keyframes[0] || undefined,
+            });
+            const seeStarted = Date.now();
+            perceived = await seeVideoFramesFn(ingested, jobId);
+            seeMs = Date.now() - seeStarted;
+            perceived.keyframes = perceived.keyframes?.length ? perceived.keyframes : keyframes;
+            try {
+              Sentry.getActiveSpan()?.setAttribute('see_ms', seeMs);
+            } catch {
+              // Tracing attributes are optional.
+            }
+            Sentry.logger.info('identify.see', {
+              job_id: jobId,
+              origin,
+              media_type: mediaType,
+              frame_count: frameCount,
+              selected_frames: selectedFrames,
+              see_ms: seeMs,
+            });
+          }
+        }
       } else {
-        perceived = await perceive(file, jobId, { detail: false });
+        step(jobId, ctx, 'seeing', 'looking at the outfit');
+        const seeStarted = Date.now();
+        perceived = await perceiveFn(file, jobId, { detail: false });
+        seeMs = Date.now() - seeStarted;
       }
     } catch (error) {
       logger.error(jobMsg(jobId, 'see — Baseten/AI failed'), error);
@@ -312,7 +401,14 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         origin,
         garment_count: 0,
         shopify_hits: 0,
-        ...matchingFields([], { image_hash: imageHash, phash }),
+        ...matchingFields([], {
+          image_hash: imageHash,
+          phash,
+          frame_count: frameCount || perceived?.frame_count || 0,
+          selected_frames: selectedFrames || perceived?.selected_frames || 0,
+          ingest_ms: ingestMs,
+          see_ms: seeMs,
+        }),
       });
       // #region agent log
       agentLog('A', 'pipeline.js:empty', 'no garments after confidence filter', {
@@ -354,7 +450,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
 
     if (!mocks.has('see')) {
       try {
-        const detailed = await seeChips(garments, jobId);
+        const detailed = await seeChipsFn(garments, jobId);
         garments = detailed
           .map((garment, index) => normalizeGarment(garment, index))
           .filter((garment) => garment && garment.confidence >= 0.5);
@@ -400,7 +496,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     }
 
     const forceMockSource = mocks.has('source');
-    const sourceMode = await resolveSourceMode(forceMockSource);
+    const sourceMode = await resolveSourceModeFn(forceMockSource);
     if (sourceMode === 'mock') {
       logger.warn(jobMsg(jobId, 'source — Shopify tools unavailable, using mock matches'));
     } else {
@@ -415,7 +511,7 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         ranked = garments.map((garment) => ({ garment, matches: preferStrongExact(mockMatchesFor(garment)) }));
         step(jobId, ctx, 'ranking', 'picking the best matches');
       } else {
-        const raw = await matchOutfit(garments, jobId, {
+        const raw = await matchOutfitFn(garments, jobId, {
           onStep: (status, note) => step(jobId, ctx, status, note),
         });
         ranked = raw.map((item) => {
@@ -449,6 +545,10 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       exact_rate: ranked.length ? Number((exacts / ranked.length).toFixed(3)) : 0,
       fail_stage: failStage,
       seechip_queries: seechipQueryCount(ranked),
+      frame_count: frameCount || perceived?.frame_count || 0,
+      selected_frames: selectedFrames || perceived?.selected_frames || 0,
+      ingest_ms: ingestMs,
+      see_ms: seeMs,
     });
     Sentry.logger.info('identify.done', {
       job_id: jobId,
@@ -471,6 +571,12 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       span?.setAttribute('fail_stage', failStage || '');
       span?.setAttribute('visual_score', doneFields.visual_score ?? '');
       span?.setAttribute('seechip_queries', doneFields.seechip_queries);
+      if (mediaType === 'video') {
+        span?.setAttribute('frame_count', doneFields.frame_count);
+        span?.setAttribute('selected_frames', doneFields.selected_frames);
+        if (ingestMs != null) span?.setAttribute('ingest_ms', ingestMs);
+        if (seeMs != null) span?.setAttribute('see_ms', seeMs);
+      }
     } catch {
       // Tracing attributes are optional.
     }

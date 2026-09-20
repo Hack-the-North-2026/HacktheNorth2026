@@ -50,6 +50,27 @@ FFPROBE_BIN = os.getenv("FFPROBE_BIN", "ffprobe")
 
 ALLOWED_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"}
 MAX_VIDEO_SIZE_BYTES = 50 * 1024 * 1024  # 50 MB
+_FFMPEG_OK: bool | None = None
+
+
+def _bin_available(binary: str) -> bool:
+    try:
+        result = subprocess.run(
+            [binary, "-version"],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def ffmpeg_available() -> bool:
+    """True when ffmpeg and ffprobe are on PATH (or FFMPEG_BIN / FFPROBE_BIN)."""
+    global _FFMPEG_OK
+    if _FFMPEG_OK is None:
+        _FFMPEG_OK = _bin_available(FFMPEG_BIN) and _bin_available(FFPROBE_BIN)
+    return _FFMPEG_OK
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +89,8 @@ class VideoIngestResult(TypedDict, total=False):
     selected_frames: int
     candidate_dir: str
     keyframes: list[str]
+    image_paths: list[str]
+    frames: list[dict]
 
 
 # ---------------------------------------------------------------------------
@@ -395,33 +418,62 @@ def extract_candidate_frames(
 KEEP_FOR_IDENTIFICATION = 3
 
 
-# ---------------------------------------------------------------------------
-# Tier 2/2.5: visibility selection + garment identification
-# ---------------------------------------------------------------------------
-def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
+def keyframes_from_paths(image_paths: list[str]) -> list[str]:
+    """Encode existing JPEGs as data-URLs for the scan UI."""
+    keyframes_data: list[str] = []
+    for p in image_paths:
+        if not p or not os.path.exists(p):
+            continue
+        try:
+            with open(p, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("utf-8")
+                keyframes_data.append(f"data:image/jpeg;base64,{b64}")
+        except OSError:
+            continue
+    return keyframes_data
+
+
+def persist_selected_frames(
+    frames: list[dict],
+    dest_dir: str,
+    prefix: str,
+) -> list[dict]:
+    """Copy kept frames into fit-stealer-chips so they survive work_dir cleanup."""
+    dest = Path(dest_dir)
+    dest.mkdir(parents=True, exist_ok=True)
+    persisted: list[dict] = []
+    for frame in frames:
+        src = Path(str(frame.get("path") or ""))
+        if not src.is_file():
+            continue
+        index = int(frame.get("index") or 0)
+        dest_path = dest / f"{prefix}_frame_{index:04d}.jpg"
+        dest_path.write_bytes(src.read_bytes())
+        persisted.append({
+            "path": str(dest_path.resolve()),
+            "timestamp": float(frame.get("timestamp") or 0),
+            "sharpness": float(frame.get("sharpness") or 0),
+            "index": index,
+        })
+    return persisted
+
+
+def ingest_video_frames(video_path: str) -> VideoIngestResult:
     """
-    Full Stage 3 ingest pipeline: video → candidate frames → VLM → Garment[].
+    Stage V1 ingest — ffmpeg + visibility pick only. No VLM garments.
 
-    Orchestrates:
-      1. validate_video() — check duration, format, size
-      2. extract_candidate_frames() — Tier 1: vet + select clear, spread-out frames
-      3. select_best_video_frames() — Tier 1.5: cheap pass judging outfit
-         visibility (angle, lighting, obstruction) among the vetted candidates
-      4. analyze_frames_with_vlm() — Tier 2: identify + merge garments across
-         only the frames step 3 kept
-
-    Returns VideoIngestResult with garments, summary, and frame counts.
+    1. validate_video()
+    2. extract_candidate_frames()
+    3. select_best_video_frames() when more than KEEP_FOR_IDENTIFICATION
     """
-    from services.baseten_vlm import analyze_frames_with_vlm, select_best_video_frames
+    from services.baseten_vlm import select_best_video_frames
 
-    # Step 1: Validate
     meta = validate_video(video_path)
     logger.info(
         "ingest — processing %.1fs video (%dx%d)",
         meta["duration"], meta["width"], meta["height"],
     )
 
-    # Step 2: Extract candidates (Tier 1 — technical quality gate)
     candidates, work_dir = extract_candidate_frames(video_path, duration_s=meta["duration"])
 
     if not candidates:
@@ -432,6 +484,9 @@ def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
             frame_count=0,
             selected_frames=0,
             candidate_dir=work_dir,
+            image_paths=[],
+            frames=[],
+            keyframes=[],
         )
 
     image_paths = [c["path"] for c in candidates]
@@ -440,8 +495,6 @@ def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
         for i, c in enumerate(candidates)
     ]
 
-    # Step 3: Visibility selection (Tier 1.5) — skip the extra round-trip
-    # when there's nothing to choose between.
     if len(candidates) > KEEP_FOR_IDENTIFICATION:
         try:
             selected_idx, reasons = select_best_video_frames(
@@ -467,41 +520,80 @@ def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
             len(candidates),
         )
 
-    # Step 4: Identify + merge garments (Tier 2) on the final, small frame set
+    frames = [
+        {
+            "path": path,
+            "timestamp": meta["timestamp"],
+            "sharpness": meta["sharpness"],
+            "index": meta["index"],
+        }
+        for path, meta in zip(image_paths, frame_metadata)
+    ]
+
+    return VideoIngestResult(
+        garments=[],
+        outfit_summary="",
+        frame_count=len(candidates),
+        selected_frames=len(frames),
+        candidate_dir=work_dir,
+        image_paths=image_paths,
+        frames=frames,
+        keyframes=keyframes_from_paths(image_paths),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Combined ingest + See (convenience / identify-video fallback)
+# ---------------------------------------------------------------------------
+def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
+    """
+    Full Stage 3 convenience: ingest frames, then VLM garments.
+
+    Express V1 calls ingest and See separately so the job can show
+    ingesting → seeing. This helper stays for /api/identify-video.
+    """
+    from services.baseten_vlm import analyze_frames_with_vlm
+
+    ingested = ingest_video_frames(video_path)
+    image_paths = ingested.get("image_paths") or []
+    frames = ingested.get("frames") or []
+    if not image_paths:
+        return ingested
+
+    frame_metadata = [
+        {
+            "index": frame.get("index", i),
+            "timestamp": frame.get("timestamp", 0),
+            "sharpness": frame.get("sharpness", 0),
+        }
+        for i, frame in enumerate(frames)
+    ]
+
     try:
         result = analyze_frames_with_vlm(
             image_paths,
             frame_metadata=frame_metadata,
         )
     except Exception:
-        logger.exception("ingest — VLM analysis failed")
+        logger.exception("see — VLM analysis failed")
         raise
 
     garments = result.get("garments", [])
     outfit_summary = result.get("outfit_summary", "")
-
     logger.info(
-        "ingest — VLM returned %d garments from %d candidate frames",
-        len(garments), len(candidates),
+        "see — VLM returned %d garments from %d selected frames",
+        len(garments), len(image_paths),
     )
-
-    keyframes_data: list[str] = []
-    for p in image_paths:
-        if os.path.exists(p):
-            try:
-                with open(p, "rb") as f:
-                    b64 = base64.b64encode(f.read()).decode("utf-8")
-                    keyframes_data.append(f"data:image/jpeg;base64,{b64}")
-            except Exception:
-                pass
 
     return VideoIngestResult(
         garments=garments,
         outfit_summary=outfit_summary,
-        frame_count=len(candidates),
-        selected_frames=len(image_paths),
-        candidate_dir=work_dir,
-        keyframes=keyframes_data,
+        frame_count=ingested.get("frame_count", 0),
+        selected_frames=ingested.get("selected_frames", len(image_paths)),
+        candidate_dir=ingested.get("candidate_dir", ""),
+        image_paths=image_paths,
+        frames=frames,
+        keyframes=ingested.get("keyframes") or keyframes_from_paths(image_paths),
     )
 
 
