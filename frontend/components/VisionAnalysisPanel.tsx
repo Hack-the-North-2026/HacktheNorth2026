@@ -159,12 +159,17 @@ const MediaLayer = React.memo(function MediaLayer({
   // expo-video keeps every view bound to one player frame-synchronised, so
   // reusing the source clip's player is what makes this read as the same
   // moment seen twice rather than two clips drifting apart.
-  const ownPlayer = useVideoPlayer(isVideo && !sharedPlayer ? uri : null, (p) => {
+  // HOWEVER, on Android, ExoPlayer strictly binds to a single Surface, so sharing
+  // throws an IllegalStateException. We must fork the player on Android.
+  const canSharePlayer = Platform.OS === 'ios';
+  const shouldCreateOwn = isVideo && (!sharedPlayer || !canSharePlayer);
+
+  const ownPlayer = useVideoPlayer(shouldCreateOwn ? uri : null, (p) => {
     p.loop = true;
     p.muted = true;
     p.play();
   });
-  const player = sharedPlayer ?? ownPlayer;
+  const player = (canSharePlayer && sharedPlayer) ? sharedPlayer : ownPlayer;
 
   if (!isVideo) {
     return <Image source={{ uri }} style={{ width, height }} resizeMode="cover" />;

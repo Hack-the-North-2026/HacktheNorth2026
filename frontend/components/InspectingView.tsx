@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Dimensions, Easing, Image, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { Ionicons } from '@expo/vector-icons';
+import { useVideoPlayer, VideoView, isExpoVideoAvailable } from '../lib/videoCompat';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { CATEGORY_LABELS, IdentifyResult, IdentifyStatus } from '../lib/types';
@@ -124,6 +125,7 @@ export const InspectingView: React.FC<InspectingViewProps> = ({
   items,
   steps,
   logs,
+  keyframes,
   done,
   onFinished,
 }) => {
@@ -293,8 +295,14 @@ export const InspectingView: React.FC<InspectingViewProps> = ({
               accessibilityLabel="Hold to inspect the original photo"
             >
               <Animated.View style={{ transform: [{ scale: inspectScale }] }}>
-                {isVideo ? (
+                {isVideo && isExpoVideoAvailable ? (
                   <VideoView player={player} style={styles.media} contentFit="cover" nativeControls={false} playsInline />
+                ) : isVideo && keyframes?.[0] ? (
+                  <Image source={{ uri: keyframes[0] }} style={styles.media} resizeMode="cover" />
+                ) : isVideo ? (
+                  <View style={[styles.media, styles.videoFallback]}>
+                    <Ionicons name="videocam" size={36} color={ACCENT} />
+                  </View>
                 ) : (
                   <Image source={{ uri }} style={styles.media} resizeMode="cover" />
                 )}
@@ -427,6 +435,11 @@ const styles = StyleSheet.create({
     fontSize: 9,
     letterSpacing: 1.2,
     color: '#FBF3E7',
+  },
+  videoFallback: {
+    backgroundColor: '#1a1816',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   footer: {
     width: SCREEN_W - 48,

@@ -19,6 +19,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { FitCard } from '../../components/FitCard';
 import { IdentifyStatusView } from '../../components/IdentifyStatus';
+import { InspectingView } from '../../components/InspectingView';
+import { RippleTransition } from '../../components/RippleTransition';
 import { getIdentifyJob } from '../../lib/api';
 import {
   emptyIdentifyCopy,
@@ -27,10 +29,10 @@ import {
   isVideoJob,
   timeoutIdentifyCopy,
 } from '../../lib/identifyCopy';
-import { useVideoPlayer, VideoView } from 'expo-video';
+import { useVideoPlayer, VideoView, isExpoVideoAvailable } from '../../lib/videoCompat';
 import { getJobPreviewRecord } from '../../lib/resultStore';
 import { Sentry, withIdentifySpan } from '../../lib/sentry';
-import { CATEGORY_LABELS, GarmentCategory, IdentifyResult, Match } from '../../lib/types';
+import { CATEGORY_LABELS, GarmentCategory, IdentifyResult, Match, IdentifyStatus } from '../../lib/types';
 import {
   ACCENT_GRADIENT,
   BACKGROUND,
@@ -51,7 +53,7 @@ import {
 } from '../../lib/theme';
 
 const POLL_MS = 400;
-const { width: SCREEN_W } = Dimensions.get('window');
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 const H_PAD = 18;
 const GUTTER = 12;
 const COLUMN_W = Math.floor((SCREEN_W - H_PAD * 2 - GUTTER) / 2);
@@ -110,7 +112,8 @@ function SourceVideo({ uri, style, playing }: { uri: string; style: object; play
 export default function JobScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, mediaType } = useLocalSearchParams<{ id: string; mediaType?: string }>();
+  const paramMediaType = Array.isArray(mediaType) ? mediaType[0] : mediaType;
   const jobId = Array.isArray(id) ? id[0] : id;
   const previewRecord = jobId ? getJobPreviewRecord(jobId) : null;
   const preview = previewRecord?.uri ?? null;
@@ -118,6 +121,8 @@ export default function JobScreen() {
   const [error, setError] = useState<string | null>(null);
   const [activeCategory, setActiveCategory] = useState<GarmentCategory | 'all'>('all');
   const [sourceOpen, setSourceOpen] = useState(false);
+  const isDeepLinked = !previewRecord;
+  const [inspectPhase, setInspectPhase] = useState<'scanning' | 'revealing' | 'done'>(isDeepLinked ? 'scanning' : 'done');
   const didHaptic = useRef(false);
 
   useEffect(() => {
@@ -190,7 +195,7 @@ export default function JobScreen() {
     }
   }, [result]);
 
-  const isVideo = isVideoJob(result, preview, previewRecord?.mediaType);
+  const isVideo = isVideoJob(result, preview, previewRecord?.mediaType || paramMediaType);
   const keyframes = result?.keyframes?.filter(Boolean) || [];
   const sourceVideoUri = isVideo && preview ? preview : null;
   const sourceImageUri = sourceVideoUri ? null : keyframes[0] || result?.thumbnail_url || preview;
@@ -367,7 +372,26 @@ export default function JobScreen() {
         </View>
       </Modal>
 
-      <RevealOverlay />
+      {inspectPhase !== 'done' && (
+        <Animated.View style={[StyleSheet.absoluteFill, { zIndex: 100, elevation: 100 }]}>
+          <InspectingView
+            uri={preview || sourceImageUri || ''}
+            isVideo={isVideo}
+            status={result?.status || ('queued' as IdentifyStatus)}
+            items={result?.items || []}
+            keyframes={result?.keyframes || []}
+            done={done}
+            onFinished={() => setInspectPhase('revealing')}
+          />
+        </Animated.View>
+      )}
+
+      <RippleTransition
+        originX={SCREEN_W / 2}
+        originY={SCREEN_H / 2}
+        active={inspectPhase === 'revealing'}
+        onDone={() => setInspectPhase('done')}
+      />
     </View>
   );
 }
