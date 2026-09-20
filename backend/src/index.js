@@ -75,12 +75,15 @@ app.get('/', (_req, res) => {
 
 app.get('/health', async (_req, res) => {
   let aiService = 'unreachable';
+  let ffmpeg = 'unknown';
   try {
     const response = await fetch(`${AI_SERVICE_URL}/health`, {
       signal: AbortSignal.timeout(2000),
     });
     if (response.ok) {
       aiService = 'ok';
+      const data = await response.json().catch(() => ({}));
+      if (data.ffmpeg === 'ok' || data.ffmpeg === 'missing') ffmpeg = data.ffmpeg;
     }
   } catch {
     aiService = 'unreachable';
@@ -91,6 +94,7 @@ app.get('/health', async (_req, res) => {
     status: 'ok',
     service: 'Fit Stealer Backend',
     aiService,
+    ffmpeg,
     mongo: mongoStatus(),
     sentry: sentryEnabled() ? 'ok' : 'unconfigured',
     expoHint: lan ? `http://${lan}:${PORT}` : `http://localhost:${PORT}`,

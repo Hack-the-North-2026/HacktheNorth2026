@@ -81,6 +81,7 @@ export type IdentifyResult = {
   job_id: string;
   status: IdentifyStatus;
   origin: IdentifyOrigin;
+  media_type?: 'image' | 'video';
   thumbnail_url?: string;
   keyframes?: string[];
   outfit_summary?: string;

@@ -21,6 +21,12 @@ export function collectTempPaths(result = {}) {
   for (const garment of garments || []) {
     if (isManagedTempPath(garment?.chip_key)) paths.push(garment.chip_key);
   }
+  for (const framePath of result.image_paths || []) {
+    if (isManagedTempPath(framePath)) paths.push(framePath);
+  }
+  for (const frame of result.frames || []) {
+    if (isManagedTempPath(frame?.path)) paths.push(frame.path);
+  }
   return [...new Set(paths)];
 }
 

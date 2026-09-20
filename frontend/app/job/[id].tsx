@@ -15,7 +15,7 @@ import { ACCENT_GRADIENT } from '../../lib/theme';
 
 const HERO_HEIGHT = 460;
 const POLL_MS = 400;
-const POLL_DEADLINE_MS = 90_000;
+const POLL_DEADLINE_MS = 210_000;
 
 function RevealOverlay() {
   const opacity = useRef(new Animated.Value(1)).current;
@@ -107,7 +107,11 @@ export default function JobScreen() {
               return job;
             }
             if (Date.now() - started > POLL_DEADLINE_MS) {
-              throw new Error('This media took too long to identify. Try another clip or screenshot.');
+              throw new Error(
+                job.media_type === 'video'
+                  ? 'This clip took too long to identify. Try another clip.'
+                  : 'This screenshot took too long to identify. Try another screenshot.',
+              );
             }
             await new Promise((resolve) => setTimeout(resolve, POLL_MS));
           }

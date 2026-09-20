@@ -15,7 +15,7 @@ import { BACKGROUND } from '../lib/theme';
 type Phase = 'idle' | 'scanning' | 'revealing';
 
 const POLL_MS = 400;
-const POLL_DEADLINE_MS = 90_000;
+const POLL_DEADLINE_MS = 210_000;
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -62,7 +62,11 @@ export default function HomeScreen() {
       let latest = job;
       while (latest.status !== 'done' && latest.status !== 'error') {
         if (Date.now() - started > POLL_DEADLINE_MS) {
-          throw new Error('This media took too long to identify. Try another clip or screenshot.');
+          throw new Error(
+            isVideoUri(asset.uri, asset.mimeType)
+              ? 'This clip took too long to identify. Try another clip.'
+              : 'This screenshot took too long to identify. Try another screenshot.',
+          );
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         latest = await getIdentifyJob(job.job_id);
