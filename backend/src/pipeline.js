@@ -248,6 +248,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
         status: 'done',
         outfit_summary: perceived?.outfit_summary || '',
         items: [],
+        keyframes: perceived?.keyframes || [],
+        thumbnail_url: perceived?.keyframes?.[0] || undefined,
       });
       return;
     }
@@ -275,12 +277,12 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
       })),
     });
     // #endregion
-    temps.push(...collectTempPaths({ garments }));
-
     commit(jobId, ctx, {
       status: 'sourcing',
       outfit_summary: perceived.outfit_summary || '',
       items: garments.map((garment) => ({ garment, matches: [] })),
+      keyframes: perceived.keyframes || [],
+      thumbnail_url: perceived.keyframes?.[0] || undefined,
     });
 
     const forceMockSource = mocks.has('source');
@@ -359,6 +361,8 @@ async function runPipeline(jobId, file, ctx, origin = 'app', mediaType = 'image'
     commit(jobId, ctx, {
       status: 'done',
       items: scrubChipKeys(ranked),
+      keyframes: perceived.keyframes || [],
+      thumbnail_url: perceived.keyframes?.[0] || undefined,
     });
   } finally {
     await deleteTempPaths(temps);

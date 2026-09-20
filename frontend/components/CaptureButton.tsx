@@ -56,7 +56,7 @@ export const CaptureButton: React.FC<CaptureButtonProps> = ({ size = 176, disabl
           end={{ x: 0.9, y: 1 }}
           style={[styles.gradient, { width: size, height: size, borderRadius: size / 2 }]}
         >
-          <Ionicons name="camera" size={size * 0.34} color="#F5F5FF" />
+          <Ionicons name="shirt" size={size * 0.34} color="#F5F5FF" />
         </LinearGradient>
       </Animated.View>
     </Pressable>

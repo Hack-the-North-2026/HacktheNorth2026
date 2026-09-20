@@ -177,6 +177,7 @@ class IdentifyVideoResponse(BaseModel):
     outfit_summary: str
     frame_count: int
     image_path: Optional[str] = None
+    keyframes: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +568,7 @@ async def api_identify_video(
         outfit_summary=outfit_summary,
         frame_count=frame_count,
         image_path=image_path,
+        keyframes=result.get("keyframes", []),
     )
 
 

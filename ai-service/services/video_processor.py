@@ -16,6 +16,7 @@ Architecture contract (§4 Stage 3, §7.2):
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -60,12 +61,13 @@ class CandidateFrame(TypedDict):
     sharpness: float
 
 
-class VideoIngestResult(TypedDict):
+class VideoIngestResult(TypedDict, total=False):
     garments: list[dict]
     outfit_summary: str
     frame_count: int
     selected_frames: int
     candidate_dir: str
+    keyframes: list[str]
 
 
 # ---------------------------------------------------------------------------
@@ -483,12 +485,23 @@ def select_and_identify_from_video(video_path: str) -> VideoIngestResult:
         len(garments), len(candidates),
     )
 
+    keyframes_data: list[str] = []
+    for p in image_paths:
+        if os.path.exists(p):
+            try:
+                with open(p, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode("utf-8")
+                    keyframes_data.append(f"data:image/jpeg;base64,{b64}")
+            except Exception:
+                pass
+
     return VideoIngestResult(
         garments=garments,
         outfit_summary=outfit_summary,
         frame_count=len(candidates),
-        selected_frames=len(candidates),
+        selected_frames=len(image_paths),
         candidate_dir=work_dir,
+        keyframes=keyframes_data,
     )
 
 

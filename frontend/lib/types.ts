@@ -66,6 +66,7 @@ export type IdentifyResult = {
   status: IdentifyStatus;
   origin: IdentifyOrigin;
   thumbnail_url?: string;
+  keyframes?: string[];
   outfit_summary?: string;
   items: Array<{
     garment: Garment;

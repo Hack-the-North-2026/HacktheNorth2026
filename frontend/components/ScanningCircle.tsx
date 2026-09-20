@@ -18,6 +18,7 @@ const FINISH_DURATION_MS = 320;
 
 interface ScanningCircleProps {
   uri: string;
+  keyframes?: string[];
   size?: number;
   color?: string;
   done?: boolean;
@@ -26,6 +27,7 @@ interface ScanningCircleProps {
 
 export const ScanningCircle: React.FC<ScanningCircleProps> = ({
   uri,
+  keyframes,
   size = 176,
   color = ACCENT,
   done = false,
@@ -34,6 +36,15 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
   const breathe = useRef(new Animated.Value(0)).current;
   const progress = useRef(new Animated.Value(0)).current;
   const isVideo = isVideoUri(uri);
+  const [frameIdx, setFrameIdx] = useState(0);
+
+  useEffect(() => {
+    if (!keyframes || keyframes.length <= 1) return;
+    const timer = setInterval(() => {
+      setFrameIdx((prev) => (prev + 1) % keyframes.length);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [keyframes]);
 
   const strokeWidth = 4;
   const radius = size / 2 - strokeWidth;
@@ -91,13 +102,27 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
     <Animated.View style={{ width: size, height: size, transform: [{ scale }] }}>
       <View style={[styles.imageClip, { width: size, height: size, borderRadius: size / 2 }]}>
         {isVideo ? (
-          <LinearGradient
-            colors={['#1F1D36', '#0E0D1B']}
-            style={[styles.videoCenter, { width: size, height: size }]}
-          >
-            <Ionicons name="videocam" size={size * 0.3} color="#C4B5FD" />
-            <Text style={styles.videoBadge}>VIDEO</Text>
-          </LinearGradient>
+          keyframes && keyframes.length > 0 ? (
+            <View style={{ width: size, height: size }}>
+              <Image
+                key={frameIdx}
+                source={{ uri: keyframes[frameIdx] }}
+                style={{ width: size, height: size }}
+                resizeMode="cover"
+              />
+              <View style={styles.frameBadgeWrap}>
+                <Text style={styles.frameBadgeText}>KEYFRAME {frameIdx + 1}/{keyframes.length}</Text>
+              </View>
+            </View>
+          ) : (
+            <LinearGradient
+              colors={['#1F1D36', '#0E0D1B']}
+              style={[styles.videoCenter, { width: size, height: size }]}
+            >
+              <Ionicons name="videocam" size={size * 0.3} color="#C4B5FD" />
+              <Text style={styles.videoBadge}>VIDEO</Text>
+            </LinearGradient>
+          )
         ) : (
           <Image source={{ uri }} style={{ width: size, height: size }} resizeMode="cover" />
         )}
@@ -143,5 +168,22 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: 1.2,
     color: '#C4B5FD',
+  },
+  frameBadgeWrap: {
+    position: 'absolute',
+    bottom: 12,
+    alignSelf: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    backgroundColor: 'rgba(5, 5, 10, 0.75)',
+    borderWidth: 1,
+    borderColor: 'rgba(196, 181, 253, 0.3)',
+  },
+  frameBadgeText: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: '#DDD6FE',
+    letterSpacing: 0.8,
   },
 });

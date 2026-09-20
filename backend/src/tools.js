@@ -86,6 +86,7 @@ export async function seeVideoAndCrop(file, jobId) {
     outfit_summary: data.outfit_summary || '',
     image_path: data.image_path,
     frame_count: data.frame_count || 0,
+    keyframes: Array.isArray(data.keyframes) ? data.keyframes : [],
   };
 }
 

@@ -26,6 +26,7 @@ export default function HomeScreen() {
   const [uri, setUri] = useState<string | null>(null);
   const [circleOrigin, setCircleOrigin] = useState({ x: 0, y: 0 });
   const [jobDone, setJobDone] = useState(false);
+  const [keyframes, setKeyframes] = useState<string[]>([]);
   const jobIdRef = useRef<string | null>(null);
   const ringFinishedRef = useRef<(() => void) | null>(null);
 
@@ -46,6 +47,7 @@ export default function HomeScreen() {
 
   const runIdentify = async (asset: { uri: string; fileName?: string | null; mimeType?: string | null }) => {
     setUri(asset.uri);
+    setKeyframes([]);
     setJobDone(false);
     setPhase('scanning');
     setIdleVisible(false);
@@ -64,6 +66,9 @@ export default function HomeScreen() {
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         latest = await getIdentifyJob(job.job_id);
+        if (latest.keyframes && latest.keyframes.length > 0) {
+          setKeyframes(latest.keyframes);
+        }
       }
 
       // Let the ring's fast finish animation land before rippling away.
@@ -109,39 +114,13 @@ export default function HomeScreen() {
   const takePhoto = async () => {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permission needed', 'Allow camera access to capture a screenshot.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.9 });
-    if (!result.canceled && result.assets[0]) {
-      runIdentify(result.assets[0]);
-    }
-  };
-
-  const pickVideo = async () => {
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Permission needed', 'Allow photo library access to upload a video clip.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['videos'],
-      videoMaxDuration: 15,
-    });
-    if (!result.canceled && result.assets[0]) {
-      runIdentify(result.assets[0]);
-    }
-  };
-
-  const recordVideo = async () => {
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      Alert.alert('Permission needed', 'Allow camera access to record a video clip.');
+      Alert.alert('Permission needed', 'Allow camera access to capture a screenshot or record a video.');
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ['videos'],
+      mediaTypes: ['images', 'videos'],
       videoMaxDuration: 15,
+      quality: 0.9,
     });
     if (!result.canceled && result.assets[0]) {
       runIdentify(result.assets[0]);
@@ -168,18 +147,6 @@ export default function HomeScreen() {
         </View>
         <Text style={styles.caption}>Tap to find this fit</Text>
         <Text style={styles.subCaption}>Hold to use camera</Text>
-
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Upload or record video"
-          disabled={phase !== 'idle'}
-          onPress={pickVideo}
-          onLongPress={recordVideo}
-          style={({ pressed }) => [styles.videoButton, pressed && styles.videoButtonPressed]}
-        >
-          <Ionicons name="videocam-outline" size={17} color="#A78BFA" />
-          <Text style={styles.videoButtonText}>Video Clip (up to 15s)</Text>
-        </Pressable>
       </Animated.View>
 
       <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity, pointerEvents: 'none' }]}>
@@ -188,6 +155,7 @@ export default function HomeScreen() {
             <SilhouetteFlash active={phase === 'scanning'} size={260} />
             <ScanningCircle
               uri={uri}
+              keyframes={keyframes}
               size={176}
               done={jobDone}
               onFinished={() => ringFinishedRef.current?.()}
@@ -279,28 +247,5 @@ const styles = StyleSheet.create({
   scanSubtitle: {
     fontSize: 13,
     color: '#5C5C6B',
-  },
-  videoButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 22,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 999,
-    backgroundColor: 'rgba(30, 27, 46, 0.75)',
-    borderWidth: 1,
-    borderColor: 'rgba(167, 139, 250, 0.25)',
-  },
-  videoButtonPressed: {
-    backgroundColor: 'rgba(46, 40, 72, 0.9)',
-    borderColor: 'rgba(167, 139, 250, 0.45)',
-    transform: [{ scale: 0.97 }],
-  },
-  videoButtonText: {
-    color: '#DDD6FE',
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.2,
   },
 });
