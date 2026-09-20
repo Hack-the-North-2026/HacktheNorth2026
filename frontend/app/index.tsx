@@ -10,12 +10,24 @@ import { CaptureButton } from '../components/CaptureButton';
 import { ScanningCircle } from '../components/ScanningCircle';
 import { SilhouetteFlash } from '../components/SilhouetteFlash';
 import { RippleTransition } from '../components/RippleTransition';
-import { BACKGROUND } from '../lib/theme';
+import {
+  BACKGROUND,
+  TEXT_PRIMARY,
+  TEXT_MUTED,
+  SURFACE,
+  BORDER,
+  ACCENT,
+  FONT_MEDIUM,
+  FONT_SEMIBOLD,
+  FONT_BOLD,
+  FONT_SERIF_SEMIBOLD,
+} from '../lib/theme';
 
 type Phase = 'idle' | 'scanning' | 'revealing';
 
 const POLL_MS = 400;
 const POLL_DEADLINE_MS = 90_000;
+const CIRCLE_SIZE = 200;
 
 const useNativeDriver = Platform.OS !== 'web';
 
@@ -139,21 +151,22 @@ export default function HomeScreen() {
   return (
     <View style={styles.container}>
       <Animated.View style={[styles.layer, { opacity: idleOpacity, pointerEvents: phase === 'idle' ? 'auto' : 'none' }]}>
-        <Text style={styles.title}>Fit Stealer</Text>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Recently searched"
           onPress={() => router.push('/recent')}
           style={[styles.recentButton, { top: Math.max(insets.top, 16) + 8 }]}
         >
-          <Ionicons name="time-outline" size={16} color="#F5F5FA" />
+          <Ionicons name="time-outline" size={16} color={TEXT_PRIMARY} />
           <Text style={styles.recentLabel}>Recent</Text>
         </Pressable>
-        <View style={styles.buttonWrap}>
-          <CaptureButton disabled={phase !== 'idle'} onPress={pickFromLibrary} onLongPress={takePhoto} />
+        <View style={styles.captionWrap}>
+          <Text style={styles.caption}>Tap to find this fit</Text>
+          <Text style={styles.subCaption}>Hold to use the camera</Text>
         </View>
-        <Text style={styles.caption}>Tap to find this fit</Text>
-        <Text style={styles.subCaption}>Hold to use the camera</Text>
+        <View style={styles.buttonWrap}>
+          <CaptureButton size={CIRCLE_SIZE} disabled={phase !== 'idle'} onPress={pickFromLibrary} onLongPress={takePhoto} />
+        </View>
         {Platform.OS === 'android' && (
           <Pressable
             style={styles.overlayButton}
@@ -168,11 +181,11 @@ export default function HomeScreen() {
       <Animated.View style={[styles.layer, styles.scanningLayer, { opacity: scanOpacity, pointerEvents: 'none' }]}>
         {uri && phase !== 'idle' && (
           <View onLayout={onCircleLayout} style={styles.circleStack}>
-            <SilhouetteFlash active={phase === 'scanning'} size={260} />
+            <SilhouetteFlash active={phase === 'scanning'} size={296} />
             <ScanningCircle
               uri={uri}
               keyframes={keyframes}
-              size={176}
+              size={CIRCLE_SIZE}
               done={jobDone}
               onFinished={() => ringFinishedRef.current?.()}
             />
@@ -209,18 +222,10 @@ const styles = StyleSheet.create({
     gap: 24,
   },
   circleStack: {
-    width: 176,
-    height: 176,
+    width: CIRCLE_SIZE,
+    height: CIRCLE_SIZE,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  title: {
-    position: 'absolute',
-    top: 76,
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#F5F5FA',
-    letterSpacing: 0.3,
   },
   recentButton: {
     position: 'absolute',
@@ -228,55 +233,61 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     borderRadius: 999,
-    backgroundColor: 'rgba(10, 10, 16, 0.55)',
+    backgroundColor: SURFACE,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: BORDER,
   },
   recentLabel: {
-    color: '#F5F5FA',
-    fontSize: 13,
-    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    fontSize: 13.5,
+    fontFamily: FONT_SEMIBOLD,
   },
   buttonWrap: {
-    marginBottom: 28,
+    marginTop: 40,
+  },
+  captionWrap: {
+    alignItems: 'center',
   },
   caption: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#F5F5FA',
-    marginTop: 8,
+    fontSize: 30,
+    fontFamily: FONT_SERIF_SEMIBOLD,
+    color: TEXT_PRIMARY,
+    textAlign: 'center',
+    letterSpacing: 0.2,
   },
   subCaption: {
-    fontSize: 13,
-    color: '#5C5C6B',
-    marginTop: 6,
+    fontSize: 15,
+    fontFamily: FONT_MEDIUM,
+    color: TEXT_MUTED,
+    marginTop: 8,
   },
   scanTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#F5F5FA',
+    fontSize: 20,
+    fontFamily: FONT_BOLD,
+    color: TEXT_PRIMARY,
     marginTop: 4,
   },
   scanSubtitle: {
-    fontSize: 13,
-    color: '#5C5C6B',
+    fontSize: 14,
+    fontFamily: FONT_MEDIUM,
+    color: TEXT_MUTED,
   },
   overlayButton: {
     marginTop: 28,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
+    paddingVertical: 11,
+    paddingHorizontal: 22,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: 'rgba(108,108,255,0.4)',
-    backgroundColor: 'rgba(108,108,255,0.12)',
+    borderColor: 'rgba(156,107,65,0.35)',
+    backgroundColor: 'rgba(156,107,65,0.10)',
   },
   overlayButtonText: {
-    color: '#9C9CFF',
-    fontSize: 13,
-    fontWeight: '600',
+    color: ACCENT,
+    fontSize: 13.5,
+    fontFamily: FONT_SEMIBOLD,
     letterSpacing: 0.3,
   },
 });

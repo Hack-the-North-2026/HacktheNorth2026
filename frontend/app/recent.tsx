@@ -13,6 +13,20 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { listRecentSearches } from '../lib/api';
 import { RecentSearch } from '../lib/types';
+import {
+  BACKGROUND,
+  SURFACE,
+  SURFACE_MUTED,
+  BORDER,
+  TEXT_PRIMARY,
+  TEXT_SECONDARY,
+  TEXT_MUTED,
+  ACCENT,
+  FONT_MEDIUM,
+  FONT_SEMIBOLD,
+  FONT_BOLD,
+  FONT_EXTRABOLD,
+} from '../lib/theme';
 
 function formatRelativeTime(iso: string): string {
   const then = new Date(iso).getTime();
@@ -76,7 +90,7 @@ export default function RecentSearchesScreen() {
           onPress={() => router.back()}
           style={styles.backButton}
         >
-          <Ionicons name="chevron-back" size={22} color="#F5F5FA" />
+          <Ionicons name="chevron-back" size={22} color={TEXT_PRIMARY} />
         </Pressable>
         <Text style={styles.title}>Recently searched</Text>
         <View style={styles.headerSpacer} />
@@ -84,7 +98,7 @@ export default function RecentSearchesScreen() {
 
       {loading ? (
         <View style={styles.centered}>
-          <ActivityIndicator color="#9C9CFF" />
+          <ActivityIndicator color={ACCENT} />
         </View>
       ) : error ? (
         <View style={styles.centered}>
@@ -109,7 +123,7 @@ export default function RecentSearchesScreen() {
                 <Image source={{ uri: search.thumbnail_url }} style={styles.thumb} />
               ) : (
                 <View style={[styles.thumb, styles.thumbFallback]}>
-                  <Ionicons name="shirt-outline" size={22} color="#9C9CFF" />
+                  <Ionicons name="shirt-outline" size={22} color={ACCENT} />
                 </View>
               )}
               <View style={styles.details}>
@@ -121,7 +135,7 @@ export default function RecentSearchesScreen() {
                 ) : null}
                 <Text style={styles.rowMeta}>{subtitleFor(search)}</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color="#5C5C6B" />
+              <Ionicons name="chevron-forward" size={18} color={TEXT_MUTED} />
             </Pressable>
           ))}
         </ScrollView>
@@ -133,7 +147,7 @@ export default function RecentSearchesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#050509',
+    backgroundColor: BACKGROUND,
   },
   header: {
     flexDirection: 'row',
@@ -145,18 +159,18 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(10, 10, 16, 0.55)',
+    backgroundColor: SURFACE,
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.12)',
+    borderColor: BORDER,
   },
   title: {
     flex: 1,
     textAlign: 'center',
-    color: '#F5F5FA',
-    fontSize: 17,
-    fontWeight: '700',
+    color: TEXT_PRIMARY,
+    fontSize: 18,
+    fontFamily: FONT_EXTRABOLD,
   },
   headerSpacer: {
     width: 40,
@@ -170,13 +184,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.06)',
+    borderBottomColor: BORDER,
   },
   thumb: {
     width: 56,
     height: 56,
     borderRadius: 12,
-    backgroundColor: '#12121A',
+    backgroundColor: SURFACE_MUTED,
   },
   thumbFallback: {
     alignItems: 'center',
@@ -189,17 +203,19 @@ const styles = StyleSheet.create({
     gap: 3,
   },
   rowTitle: {
-    color: '#F5F5FA',
-    fontSize: 15,
-    fontWeight: '600',
+    color: TEXT_PRIMARY,
+    fontSize: 15.5,
+    fontFamily: FONT_BOLD,
   },
   rowSummary: {
-    color: '#6B6B7A',
+    color: TEXT_SECONDARY,
     fontSize: 13,
+    fontFamily: FONT_MEDIUM,
   },
   rowMeta: {
-    color: '#5C5C6B',
+    color: TEXT_MUTED,
     fontSize: 12,
+    fontFamily: FONT_MEDIUM,
   },
   centered: {
     flex: 1,
@@ -209,14 +225,15 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyTitle: {
-    color: '#F5F5FA',
+    color: TEXT_PRIMARY,
     fontSize: 16,
-    fontWeight: '600',
+    fontFamily: FONT_SEMIBOLD,
     textAlign: 'center',
   },
   emptySubtitle: {
-    color: '#6B6B7A',
+    color: TEXT_SECONDARY,
     fontSize: 14,
+    fontFamily: FONT_MEDIUM,
     textAlign: 'center',
   },
 });

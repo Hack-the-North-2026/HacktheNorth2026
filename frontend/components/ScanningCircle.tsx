@@ -3,7 +3,7 @@ import { Animated, Easing, Image, Platform, StyleSheet, View, Text } from 'react
 import Svg, { Circle } from 'react-native-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { ACCENT, EASE_OUT_EXPO } from '../lib/theme';
+import { ACCENT, EASE_OUT_EXPO, FONT_BOLD } from '../lib/theme';
 import { isVideoUri } from '../lib/api';
 
 const useNativeDriver = Platform.OS !== 'web';
@@ -116,10 +116,10 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
             </View>
           ) : (
             <LinearGradient
-              colors={['#1F1D36', '#0E0D1B']}
+              colors={['#E4D5BB', '#C9AF88']}
               style={[styles.videoCenter, { width: size, height: size }]}
             >
-              <Ionicons name="videocam" size={size * 0.3} color="#C4B5FD" />
+              <Ionicons name="videocam" size={size * 0.3} color="#6B4423" />
               <Text style={styles.videoBadge}>VIDEO</Text>
             </LinearGradient>
           )
@@ -132,7 +132,7 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
           cx={size / 2}
           cy={size / 2}
           r={radius}
-          stroke="rgba(255,255,255,0.12)"
+          stroke="rgba(43,32,24,0.10)"
           strokeWidth={strokeWidth}
           fill="none"
         />
@@ -156,7 +156,7 @@ export const ScanningCircle: React.FC<ScanningCircleProps> = ({
 const styles = StyleSheet.create({
   imageClip: {
     overflow: 'hidden',
-    backgroundColor: '#12121A',
+    backgroundColor: '#ECE0CC',
   },
   videoCenter: {
     alignItems: 'center',
@@ -165,9 +165,9 @@ const styles = StyleSheet.create({
   videoBadge: {
     marginTop: 6,
     fontSize: 11,
-    fontWeight: '700',
+    fontFamily: FONT_BOLD,
     letterSpacing: 1.2,
-    color: '#C4B5FD',
+    color: '#6B4423',
   },
   frameBadgeWrap: {
     position: 'absolute',
@@ -176,14 +176,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 8,
-    backgroundColor: 'rgba(5, 5, 10, 0.75)',
+    backgroundColor: 'rgba(43, 32, 24, 0.75)',
     borderWidth: 1,
-    borderColor: 'rgba(196, 181, 253, 0.3)',
+    borderColor: 'rgba(233, 216, 189, 0.4)',
   },
   frameBadgeText: {
     fontSize: 9,
-    fontWeight: '700',
-    color: '#DDD6FE',
+    fontFamily: FONT_BOLD,
+    color: '#F3E8D6',
     letterSpacing: 0.8,
   },
 });

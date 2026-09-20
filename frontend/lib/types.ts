@@ -17,6 +17,19 @@ export type GarmentCategory =
   | 'hat'
   | 'accessory';
 
+export const CATEGORY_LABELS: Record<GarmentCategory, string> = {
+  jacket: 'Jackets',
+  shirt: 'Tops',
+  pants: 'Pants',
+  shorts: 'Shorts',
+  skirt: 'Skirts',
+  dress: 'Dresses',
+  shoes: 'Shoes',
+  bag: 'Bags',
+  hat: 'Hats',
+  accessory: 'Accessories',
+};
+
 export type Garment = {
   id: string;
   category: GarmentCategory;
