@@ -1,10 +1,61 @@
 # Fit Stealer
 
-Fit Stealer identifies what is on screen — starting with clothes from a screenshot.
+**Shazam for anything on your screen — starting with clothes.**
 
-The long-term vision is **Shazam for anything on your screen**. Build order is screenshot-in-app (Stage 1), Android device-native frame capture (Stage 2), short video (Stage 3), then any category / accessibility (Stage 4). See [OVERVIEW.md](./OVERVIEW.md) for product stages and [ARCHITECTURE.md](./ARCHITECTURE.md) for how we execute them.
+Shazam listens to a room and names the song. Fit Stealer looks at a moment on your phone and names what is in it: what it is, where it came from, and where you can get it. Clothing is the first thing it learned to recognize. The same identify job is meant to grow into objects, places, original posts, and a description of the screen someone can act on.
 
-The long-term vision is **Shazam for anything on your screen**, starting with clothing. See [OVERVIEW.md](./OVERVIEW.md) for product goals, MVP scope, and the app-first then device-native plan.
+---
+
+## Overview
+
+You are scrolling TikTok or Reels. Someone is wearing a jacket you want. Today that means pausing, screenshotting, reverse-searching, and hoping the results are the right brand. Fit Stealer shortens that to one path:
+
+> See it → identify it → get the source.
+
+### What you can do today
+
+Open the mobile app, upload a screenshot or photo of an outfit, and get the clothes in that image broken into items. Each item comes back with the best source we can honestly return: a product link when we find the piece, or a clearly labeled similar match (same category, color, and silhouette) when we do not. A confident wrong brand is treated as a failure. If the photo has no clear outfit, the app says so.
+
+The happy path is: open the app → upload a screenshot of a distinctive outfit → see the fit split into item cards → tap through to a product.
+
+### How one upload becomes those cards
+
+The app never talks to the models itself. It sends the image to an HTTP API. The API runs one identify job and returns cards the app can render.
+
+```text
+Capture  →  Ingest  →  See  →  Source  →  Rank  →  Return
+screenshot   one still   vision   catalogs   honest    item cards
+                         model    + search   exact vs
+                                              similar
+```
+
+1. **Capture.** You pick a screenshot or photo inside the app (camera roll or camera).
+2. **Ingest.** The image is validated and stored as a single frame.
+3. **See.** A vision model (Baseten) reads the still and lists the garments: category, a search-ready description, color and material, and a crop of each piece. A brand is recorded only when the image actually shows a cue.
+4. **Source.** Each crop is searched in parallel. Shopify’s Global Catalog is the main commerce path (text plus the garment photo, across merchants). Browserbase and Composio can fill gaps when a still is not in that catalog.
+5. **Rank.** A ranker keeps at most a few matches per item and labels each one **Found** (same item) or **Similar**. Similar matches stay similar.
+6. **Return.** The app polls the job and shows item cards with shop links, prices, and a one-line reason.
+
+Capture is always something you start. Fit Stealer does not record the screen in the background.
+
+### Where this is going
+
+Later stages reuse that same job. They change how the image is captured, whether the media is a still or a short clip, and which categories the model is allowed to name.
+
+| Stage | What changes | What you get |
+| --- | --- | --- |
+| **1 — now** | Upload a screenshot inside the app | Clothing items and source links |
+| **2** | A control on Android grabs the paused frame (on iOS: share the screenshot, or identify the last one) | The same clothing cards, without leaving the video to pick a file |
+| **3** | Short video snippets, a few seconds | A better clothing read from motion, extra angles, and on-screen text |
+| **4** | Any category | Objects, places, original content, labels, and a description of the screen so someone can act on it |
+
+Stage 2 on Android is a bubble or tile over the current app: pause the video, tap once, and that frame is identified. iOS does not allow another app to screenshot TikTok from a floating button, so the iPhone path is the share sheet. Stage 3 adds video so the clothing identifier gets more signal. Stage 4 opens the category. Accessibility is the destination of that last stage, built into the same engine: the system that finds a hoodie can also describe an outfit, read a label, or name an object when searching by text is not an option.
+
+### What this product is
+
+A source identifier. Shopping links are how it proves it found the thing. The product principles are: identify first, shop second; honest matches over a wrong brand; one pipeline for every capture method; a working screenshot before OS-level capture; still images before video; clothing now, everything else on the same architecture later.
+
+Deeper product notes are in [OVERVIEW.md](./OVERVIEW.md). How the pipeline, contracts, and services are built is in [ARCHITECTURE.md](./ARCHITECTURE.md). The rest of this README is how the repo is laid out, how to run it, and which API the app calls.
 
 ---
 

@@ -38,20 +38,42 @@ function printQRCode() {
   console.log('======================================================\n');
 }
 
+function debugLog(hypothesisId, location, message, data) {
+  // #region agent log
+  fetch('http://127.0.0.1:7786/ingest/14f230d3-70c9-4ad3-a18f-383a84fda265',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'deef38'},body:JSON.stringify({sessionId:'deef38',runId:'sim-pre',hypothesisId,location,message,data,timestamp:Date.now()})}).catch(()=>{});
+  // #endregion
+}
+
 function run(command, args) {
-  return spawnSync(command, args, { encoding: 'utf8' });
+  const started = Date.now();
+  debugLog('A', 'dev-ios.mjs:run:start', `spawnSync ${command}`, { args });
+  const result = spawnSync(command, args, { encoding: 'utf8', timeout: 8000 });
+  debugLog('A', 'dev-ios.mjs:run:end', `spawnSync ${command} finished`, {
+    args,
+    status: result.status,
+    signal: result.signal,
+    errorCode: result.error?.code,
+    errorMessage: result.error?.message,
+    ms: Date.now() - started,
+    stderr: String(result.stderr || '').slice(0, 400),
+    stdout: String(result.stdout || '').slice(0, 200),
+  });
+  return result;
 }
 
 function bootSimulator() {
   if (process.platform !== 'darwin') {
+    debugLog('A', 'dev-ios.mjs:bootSimulator:skip', 'Not darwin', { platform: process.platform });
     return;
   }
+  debugLog('A', 'dev-ios.mjs:bootSimulator:start', 'Booting simulator', { device: DEVICE, platform: process.platform });
   run('xcrun', ['simctl', 'boot', DEVICE]);
   run('open', ['-a', 'Simulator']);
-  const bootStatus = run('xcrun', ['simctl', 'bootstatus', 'booted', '-b']);
-  if (bootStatus.status !== 0) {
+  const bootStatus = run('xcrun', ['simctl', 'list', 'devices', 'booted']);
+  if (bootStatus.status !== 0 && bootStatus.error?.code !== 'ETIMEDOUT') {
     console.warn(bootStatus.stderr || 'Simulator boot status check failed.');
   }
+  debugLog('A', 'dev-ios.mjs:bootSimulator:done', 'Finished bootSimulator', { status: bootStatus.status });
 }
 
 async function metroIsRunning() {
@@ -81,10 +103,15 @@ async function waitForMetro() {
 
 async function ensureExpoGo() {
   if (process.platform !== 'darwin') return;
+  debugLog('C', 'dev-ios.mjs:ensureExpoGo:start', 'Checking Expo Go container', { bundleId: EXPO_GO_BUNDLE_ID });
   const check = run('xcrun', ['simctl', 'get_app_container', 'booted', EXPO_GO_BUNDLE_ID]);
-  if (check.status === 0) return;
+  if (check.status === 0) {
+    debugLog('C', 'dev-ios.mjs:ensureExpoGo:installed', 'Expo Go already installed', { status: check.status });
+    return;
+  }
 
   console.log('Expo Go is not installed on the simulator yet. Installing it now...');
+  debugLog('C', 'dev-ios.mjs:ensureExpoGo:missing', 'Expo Go missing, installing', { status: check.status, stderr: String(check.stderr || '').slice(0, 300) });
   try {
     const { createRequire } = await import('node:module');
     const req = createRequire(import.meta.url);
@@ -92,8 +119,10 @@ async function ensureExpoGo() {
     const manager = await AppleDeviceManager.resolveAsync({ device: { name: DEVICE } });
     await manager.ensureExpoGoAsync('57.0.0');
     console.log('Expo Go installed successfully.');
+    debugLog('C', 'dev-ios.mjs:ensureExpoGo:installedNow', 'Expo Go install succeeded', {});
   } catch (err) {
     console.warn(`Could not auto-install Expo Go: ${err.message}`);
+    debugLog('C', 'dev-ios.mjs:ensureExpoGo:fail', 'Expo Go install failed', { error: err.message });
   }
 }
 
@@ -107,16 +136,19 @@ async function openOnSimulator() {
     const opened = run('xcrun', ['simctl', 'openurl', 'booted', EXPO_URL]);
     if (opened.status === 0) {
       console.log(`Opened ${EXPO_URL} on ${DEVICE}`);
+      debugLog('D', 'dev-ios.mjs:openOnSimulator:opened', 'Opened Expo URL', { attempt, url: EXPO_URL });
       return;
     }
     console.warn(`Retry ${attempt}/6: could not open ${EXPO_URL} in the simulator`);
+    debugLog('D', 'dev-ios.mjs:openOnSimulator:retry', 'openurl failed', { attempt, status: opened.status, stderr: String(opened.stderr || '').slice(0, 300) });
     await delay(3000);
   }
 
   console.warn(`Could not auto-open the iOS Simulator. In Expo Go, open ${EXPO_URL}`);
+  debugLog('D', 'dev-ios.mjs:openOnSimulator:fail', 'Gave up opening Expo URL', { url: EXPO_URL });
 }
 
-bootSimulator();
+debugLog('A', 'dev-ios.mjs:main', 'Script starting', { platform: process.platform, device: DEVICE, port: PORT });
 
 const isWin = process.platform === 'win32';
 const expoBin = path.resolve(
@@ -127,6 +159,7 @@ const expoBin = path.resolve(
 const localIp = getLocalIp();
 const apiBaseUrl = process.env.EXPO_PUBLIC_API_BASE_URL || (localIp !== '127.0.0.1' ? `http://${localIp}:4000` : 'http://127.0.0.1:4000');
 
+console.log('Starting Expo on port 8081...');
 const expo = spawn(expoBin, ['start', '--port', String(PORT)], {
   stdio: 'inherit',
   env: {
@@ -137,8 +170,14 @@ const expo = spawn(expoBin, ['start', '--port', String(PORT)], {
   shell: isWin,
 });
 
+debugLog('B', 'dev-ios.mjs:expoSpawned', 'Spawned expo start', { pid: expo.pid, apiBaseUrl, runId: 'post-fix' });
+
+bootSimulator();
+debugLog('B', 'dev-ios.mjs:afterBoot', 'bootSimulator returned, spawning Expo', { expoBinExistsHint: 'next' });
+
 waitForMetro()
   .then(async (ready) => {
+    debugLog('B', 'dev-ios.mjs:metroReady', 'Metro wait finished', { ready });
     if (!ready) {
       console.warn('Metro did not become ready; skipping simulator open.');
       return;
@@ -150,9 +189,15 @@ waitForMetro()
   })
   .catch((error) => {
     console.warn(`Could not open iOS Simulator: ${error.message}`);
+    debugLog('E', 'dev-ios.mjs:openCatch', 'openOnSimulator threw', { error: error.message });
   });
 
+expo.on('error', (error) => {
+  debugLog('B', 'dev-ios.mjs:expoError', 'Expo spawn error', { error: error.message, code: error.code });
+});
+
 expo.on('exit', (code) => {
+  debugLog('B', 'dev-ios.mjs:expoExit', 'Expo process exited', { code });
   process.exit(code ?? 0);
 });
 
